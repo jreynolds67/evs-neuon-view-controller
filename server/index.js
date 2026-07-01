@@ -72,7 +72,9 @@ app.get('/api/panel/cards/:cardId/heads', async (req, res) => {
   if (!card) return res.status(404).json({ error: 'Unknown card' });
   try {
     const heads = await getHeads(card.ip);
-    res.json(heads.map((h) => ({ uuid: h.uuid, name: h.name })));
+    // Hide nameless head-shaped entries; they aren't meaningful targets for a recall.
+    const usable = heads.filter((h) => h.name && h.name.trim() && h.name !== h.uuid);
+    res.json((usable.length ? usable : heads).map((h) => ({ uuid: h.uuid, name: h.name })));
   } catch (e) { sendErr(res, e); }
 });
 
@@ -141,26 +143,16 @@ app.get('/api/panel/cards/:cardId/snapshots/:snapUuid/heads', async (req, res) =
       getSnapshotModel(card.ip, req.params.snapUuid),
       getHeads(card.ip).catch(() => []),
     ]);
+    // Extractor already returns only named heads (unnamed entries aren't selectable).
     let heads = extractSnapshotHeads(model);
 
-    // Cross-check against the board's live heads to drop phantom UUIDs that the model
-    // parser may pick up (widgets, io blocks, templates). Snapshot head UUIDs normally
-    // match the live head UUIDs on the same board.
+    // Light backstop: if the snapshot's head UUIDs line up with live board heads, keep
+    // the intersection. If they don't line up at all (e.g. an imported snapshot), keep
+    // the named extraction as-is rather than emptying the list.
     const liveUuids = new Set((liveHeads || []).map((h) => h.uuid));
-    const liveNames = new Map((liveHeads || []).map((h) => [(h.name || '').trim().toLowerCase(), h]));
-
     if (liveUuids.size) {
       const byUuid = heads.filter((h) => liveUuids.has(h.uuid));
-      if (byUuid.length) {
-        heads = byUuid;
-      } else {
-        // UUIDs didn't line up (possible across firmware/imported snapshots); fall back
-        // to heads whose NAME matches a live head, which still excludes phantoms.
-        const byName = heads.filter((h) => liveNames.has((h.name || '').trim().toLowerCase()));
-        if (byName.length) heads = byName;
-        // If neither matched, leave `heads` as-is; the UI will present them and the
-        // operator confirms before anything fires.
-      }
+      if (byUuid.length) heads = byUuid;
     }
 
     res.json({ heads, parsed: heads.length > 0 });

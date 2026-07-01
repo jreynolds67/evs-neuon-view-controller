@@ -153,15 +153,12 @@ export async function getSnapshotModel(ip, uuid) {
   return boardFetch(ip, `/snapshots/${uuid}/model`);
 }
 
-// Best-effort extraction of {uuid, name} head entries from a snapshot model blob.
-// The API spec does not formally document the model shape, so this walks the object
-// looking for objects that match the real Neuron head shape (HeadGet). If nothing is
-// found, the caller refuses the restore rather than guess.
-//
-// Head detection requires the object to carry SEVERAL head-specific fields, not just a
-// uuid under a "heads" key — snapshot models nest other uuid-bearing objects (widgets,
-// templates, io) under head-adjacent keys, and a loose test lets those leak in as
-// phantom "heads".
+// Extract named head entries from a snapshot model blob. An operator cannot create an
+// unnamed head/snapshot in the GUI, so a real, selectable head ALWAYS has a name. That
+// single fact is the whole discriminator: collect every object carrying a uuid + a
+// non-empty name, and ignore everything else. Unnamed uuid-bearing objects (widgets, io
+// blocks, templates, nested sub-canvases) are dropped — they're not selectable anyway,
+// since the operator couldn't tell what they'd be loading.
 export function extractSnapshotHeads(model) {
   const found = [];
   const seen = new Set();
@@ -171,19 +168,8 @@ export function extractSnapshotHeads(model) {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
   }
 
-  // Fields defined on a Neuron head (HeadGet). A real head has most of these; a stray
-  // uuid-bearing object (widget, template, io block) has almost none.
-  const HEAD_FIELDS = ['name', 'width', 'height', 'backgroundMode', 'backgroundColor',
-    'colorSpace', 'widgets', 'x', 'y'];
-
-  function headFieldScore(node) {
-    return HEAD_FIELDS.reduce((n, f) => n + (f in node ? 1 : 0), 0);
-  }
-
-  function pushHead(uuid, name) {
-    if (!looksLikeUuid(uuid) || seen.has(uuid)) return;
-    seen.add(uuid);
-    found.push({ uuid, name: name || uuid });
+  function isRealName(name, uuid) {
+    return typeof name === 'string' && name.trim() !== '' && name !== uuid;
   }
 
   function walk(node, keyHint) {
@@ -192,17 +178,16 @@ export function extractSnapshotHeads(model) {
       return;
     }
     if (node && typeof node === 'object') {
-      // Require: a uuid, presence under a "heads" collection, AND enough corroborating
-      // head fields (dimensions + a widgets array is the strongest signal).
-      const strongShape =
-        looksLikeUuid(node.uuid) &&
-        Array.isArray(node.widgets) &&
-        ('width' in node && 'height' in node);
-      const scoredShape =
-        looksLikeUuid(node.uuid) && keyHint === 'heads' && headFieldScore(node) >= 3;
-
-      if (strongShape || scoredShape) {
-        pushHead(node.uuid, node.name);
+      // Only treat as a head if it's under a "heads" collection, has a uuid, a widgets
+      // array (heads own widgets), and a real name. The name requirement alone excludes
+      // the phantoms; the rest keeps us from picking up named non-head objects.
+      if (keyHint === 'heads' &&
+          looksLikeUuid(node.uuid) &&
+          Array.isArray(node.widgets) &&
+          isRealName(node.name, node.uuid) &&
+          !seen.has(node.uuid)) {
+        seen.add(node.uuid);
+        found.push({ uuid: node.uuid, name: node.name });
       }
       for (const [k, v] of Object.entries(node)) walk(v, k);
     }
