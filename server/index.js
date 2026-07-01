@@ -137,8 +137,32 @@ app.get('/api/panel/cards/:cardId/snapshots/:snapUuid/heads', async (req, res) =
   const card = getCardById(config, req.params.cardId);
   if (!card) return res.status(404).json({ error: 'Unknown card' });
   try {
-    const model = await getSnapshotModel(card.ip, req.params.snapUuid);
-    const heads = extractSnapshotHeads(model);
+    const [model, liveHeads] = await Promise.all([
+      getSnapshotModel(card.ip, req.params.snapUuid),
+      getHeads(card.ip).catch(() => []),
+    ]);
+    let heads = extractSnapshotHeads(model);
+
+    // Cross-check against the board's live heads to drop phantom UUIDs that the model
+    // parser may pick up (widgets, io blocks, templates). Snapshot head UUIDs normally
+    // match the live head UUIDs on the same board.
+    const liveUuids = new Set((liveHeads || []).map((h) => h.uuid));
+    const liveNames = new Map((liveHeads || []).map((h) => [(h.name || '').trim().toLowerCase(), h]));
+
+    if (liveUuids.size) {
+      const byUuid = heads.filter((h) => liveUuids.has(h.uuid));
+      if (byUuid.length) {
+        heads = byUuid;
+      } else {
+        // UUIDs didn't line up (possible across firmware/imported snapshots); fall back
+        // to heads whose NAME matches a live head, which still excludes phantoms.
+        const byName = heads.filter((h) => liveNames.has((h.name || '').trim().toLowerCase()));
+        if (byName.length) heads = byName;
+        // If neither matched, leave `heads` as-is; the UI will present them and the
+        // operator confirms before anything fires.
+      }
+    }
+
     res.json({ heads, parsed: heads.length > 0 });
   } catch (e) { sendErr(res, e); }
 });

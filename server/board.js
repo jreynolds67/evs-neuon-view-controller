@@ -155,8 +155,13 @@ export async function getSnapshotModel(ip, uuid) {
 
 // Best-effort extraction of {uuid, name} head entries from a snapshot model blob.
 // The API spec does not formally document the model shape, so this walks the object
-// looking for anything that looks like a head. If nothing is found, the caller must
-// fall back to using the live board heads and refuse the restore rather than guess.
+// looking for objects that match the real Neuron head shape (HeadGet). If nothing is
+// found, the caller refuses the restore rather than guess.
+//
+// Head detection requires the object to carry SEVERAL head-specific fields, not just a
+// uuid under a "heads" key — snapshot models nest other uuid-bearing objects (widgets,
+// templates, io) under head-adjacent keys, and a loose test lets those leak in as
+// phantom "heads".
 export function extractSnapshotHeads(model) {
   const found = [];
   const seen = new Set();
@@ -164,6 +169,15 @@ export function extractSnapshotHeads(model) {
   function looksLikeUuid(v) {
     return typeof v === 'string' &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+  }
+
+  // Fields defined on a Neuron head (HeadGet). A real head has most of these; a stray
+  // uuid-bearing object (widget, template, io block) has almost none.
+  const HEAD_FIELDS = ['name', 'width', 'height', 'backgroundMode', 'backgroundColor',
+    'colorSpace', 'widgets', 'x', 'y'];
+
+  function headFieldScore(node) {
+    return HEAD_FIELDS.reduce((n, f) => n + (f in node ? 1 : 0), 0);
   }
 
   function pushHead(uuid, name) {
@@ -178,11 +192,16 @@ export function extractSnapshotHeads(model) {
       return;
     }
     if (node && typeof node === 'object') {
-      // A head object typically has a uuid + name + width/height + widgets.
-      const isHeadShape =
+      // Require: a uuid, presence under a "heads" collection, AND enough corroborating
+      // head fields (dimensions + a widgets array is the strongest signal).
+      const strongShape =
         looksLikeUuid(node.uuid) &&
-        ('widgets' in node || 'width' in node || 'backgroundMode' in node);
-      if (isHeadShape && keyHint === 'heads') {
+        Array.isArray(node.widgets) &&
+        ('width' in node && 'height' in node);
+      const scoredShape =
+        looksLikeUuid(node.uuid) && keyHint === 'heads' && headFieldScore(node) >= 3;
+
+      if (strongShape || scoredShape) {
         pushHead(node.uuid, node.name);
       }
       for (const [k, v] of Object.entries(node)) walk(v, k);
