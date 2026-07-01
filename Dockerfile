@@ -12,9 +12,9 @@ COPY public ./public
 
 # Config lives on a mounted volume so it survives redeploys
 ENV CONFIG_PATH=/data/config.json
-ENV PORT=8080
+ENV PORT=8001
 VOLUME ["/data"]
 
-EXPOSE 8080
+EXPOSE 8001
 
 CMD ["node", "server/index.js"]
