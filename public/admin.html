@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neuron MV Control — Admin</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    html, body { overflow: auto; -webkit-user-select: text; user-select: text; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+    .section h2 { font-size: 18px; margin-bottom: 4px; }
+    .section .desc { color: var(--ink-dim); font-size: 13px; margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 14px; vertical-align: top; }
+    th { color: var(--ink-dim); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    input, select {
+      background: var(--panel-2); border: 1px solid var(--line); color: var(--ink);
+      border-radius: 8px; padding: 9px 11px; font: inherit; width: 100%;
+    }
+    input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+    .inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--panel-2);
+      border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 13px; }
+    .chip.on { border-color: var(--accent); color: var(--accent); }
+    .btn.sm { min-height: 40px; font-size: 14px; padding: 0 14px; }
+    .btn.del { color: var(--danger); }
+    .savebar { position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--line);
+      padding: 14px 24px; display: flex; gap: 12px; align-items: center; z-index: 10; }
+    .savebar .grow { flex: 1; }
+    .muted { color: var(--ink-faint); font-size: 12px; }
+    details { margin-top: 8px; }
+    summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+    .filterbox { margin-top: 10px; padding: 12px; background: var(--panel-2); border-radius: 8px; }
+    .snaplist { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap: 6px; margin-top: 8px; }
+    .snaplist label { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+    a.tab { color: var(--ink-dim); text-decoration: none; margin-right: 16px; }
+    a.tab.active { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="title">Neuron MV Control — Admin</div>
+    <div class="spacer"></div>
+    <a class="tab active" href="admin.html">Admin</a>
+    <a class="tab" href="index.html">Panel view</a>
+  </div>
+
+  <div class="wrap">
+    <div class="section">
+      <h2>Admin token</h2>
+      <div class="desc">If the server has ADMIN_TOKEN set, enter it here to load and save. Leave blank if disabled.</div>
+      <div class="inline">
+        <input id="token" type="password" placeholder="Admin token (optional)" style="max-width:340px">
+        <button class="btn sm" id="reload">Load config</button>
+        <span class="muted" id="loadState"></span>
+      </div>
+    </div>
+
+    <!-- CARDS -->
+    <div class="section">
+      <h2>MV cards</h2>
+      <div class="desc">The 12 multiviewer cards. Each has a stable id, a friendly label, and the board's IP address. Board IPs are never sent to the touch panels.</div>
+      <table>
+        <thead><tr><th style="width:120px">ID</th><th>Label</th><th style="width:200px">Board IP</th><th style="width:180px"></th></tr></thead>
+        <tbody id="cardRows"></tbody>
+      </table>
+      <div style="margin-top:12px" class="inline">
+        <button class="btn sm" id="addCard">Add card</button>
+        <button class="btn sm ghost" id="seed12">Seed 12 cards</button>
+      </div>
+    </div>
+
+    <!-- PANELS -->
+    <div class="section">
+      <h2>Router panels</h2>
+      <div class="desc">Each Cerebrum panel is identified by its fixed IP. Assign which cards it can control, its screen layout, and optional per-head snapshot filters.</div>
+      <div id="panelList"></div>
+      <div style="margin-top:12px">
+        <button class="btn sm" id="addPanel">Add panel</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="savebar">
+    <span class="muted" id="saveState">Not saved yet</span>
+    <div class="grow"></div>
+    <button class="btn primary" id="save">Save config</button>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="admin.js"></script>
+</body>
+</html>

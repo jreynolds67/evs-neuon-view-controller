@@ -1,7 +1,20 @@
 services:
-  evs-mv-control:
+  neuron-mv-control:
     build: .
-    container_name: evs-mv-control
-    ports:
-      - "8001:80"
+    # For Portainer Git deployment you can instead publish an image and use:
+    # image: ghcr.io/<your-user>/neuron-mv-control:latest
+    container_name: neuron-mv-control
     restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Set a token to protect the admin API/page. Leave unset to keep admin open
+      # (only do that on a trusted, isolated control network).
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      PORT: "8080"
+      CONFIG_PATH: /data/config.json
+    volumes:
+      - neuron_config:/data
+
+volumes:
+  neuron_config:

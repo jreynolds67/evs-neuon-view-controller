@@ -1,7 +1,20 @@
-FROM nginx:alpine
+FROM node:20-alpine
 
-# Static single-file control panel — nginx's default config already
-# serves /usr/share/nginx/html on port 80, so no custom nginx.conf needed.
-COPY index.html /usr/share/nginx/html/index.html
+WORKDIR /app
 
-EXPOSE 80
+# Install deps first for better layer caching
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev
+
+# App source
+COPY server ./server
+COPY public ./public
+
+# Config lives on a mounted volume so it survives redeploys
+ENV CONFIG_PATH=/data/config.json
+ENV PORT=8080
+VOLUME ["/data"]
+
+EXPOSE 8080
+
+CMD ["node", "server/index.js"]

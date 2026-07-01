@@ -1,0 +1,205 @@
+// public/admin.js
+let config = { cards: [], panels: [] };
+const $ = (id) => document.getElementById(id);
+
+function token() { return $('token').value.trim(); }
+function headers() {
+  const h = { 'Content-Type': 'application/json' };
+  if (token()) h['x-admin-token'] = token();
+  return h;
+}
+function toast(msg, kind = '') {
+  const t = $('toast'); t.textContent = msg; t.className = `toast show ${kind}`;
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.className = 'toast', 3000);
+}
+
+async function loadConfig() {
+  $('loadState').textContent = 'Loading…';
+  try {
+    const res = await fetch('/api/admin/config', { headers: headers() });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
+    config = await res.json();
+    config.cards ||= []; config.panels ||= [];
+    renderCards(); renderPanels();
+    $('loadState').textContent = 'Loaded';
+  } catch (e) { $('loadState').textContent = 'Error: ' + e.message; }
+}
+
+async function saveConfig() {
+  try {
+    const res = await fetch('/api/admin/config', {
+      method: 'PUT', headers: headers(), body: JSON.stringify(config),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
+    $('saveState').textContent = 'Saved ' + new Date().toLocaleTimeString();
+    toast('Configuration saved', 'ok');
+  } catch (e) { toast('Save failed: ' + e.message, 'err'); }
+}
+
+// ---- Cards ----------------------------------------------------------------
+
+function renderCards() {
+  const tb = $('cardRows'); tb.innerHTML = '';
+  config.cards.forEach((c, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input value="${c.id || ''}" data-i="${i}" data-f="id"></td>
+      <td><input value="${c.label || ''}" data-i="${i}" data-f="label"></td>
+      <td><input value="${c.ip || ''}" data-i="${i}" data-f="ip" placeholder="10.10.60.x"></td>
+      <td><button class="btn sm del" data-del="${i}">Remove</button></td>`;
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('input').forEach((inp) => inp.addEventListener('input', (e) => {
+    const { i, f } = e.target.dataset; config.cards[+i][f] = e.target.value;
+    if (f === 'label' || f === 'id') renderPanels(); // panel checkboxes show labels
+  }));
+  tb.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', (e) => {
+    config.cards.splice(+e.target.dataset.del, 1); renderCards(); renderPanels();
+  }));
+}
+
+$('addCard').addEventListener('click', () => {
+  const n = config.cards.length + 1;
+  config.cards.push({ id: `mv${n}`, label: `MV Card ${n}`, ip: '' });
+  renderCards(); renderPanels();
+});
+$('seed12').addEventListener('click', () => {
+  if (config.cards.length && !confirm('Replace current cards with 12 blank cards?')) return;
+  config.cards = Array.from({ length: 12 }, (_, i) => ({ id: `mv${i + 1}`, label: `MV Card ${i + 1}`, ip: '' }));
+  renderCards(); renderPanels();
+});
+
+// ---- Panels ---------------------------------------------------------------
+
+function renderPanels() {
+  const host = $('panelList'); host.innerHTML = '';
+  config.panels.forEach((p, pi) => {
+    p.cardIds ||= []; p.snapshotFilters ||= {};
+    const box = document.createElement('div');
+    box.className = 'section'; box.style.background = 'var(--panel-2)';
+    box.innerHTML = `
+      <div class="inline" style="gap:12px">
+        <div style="flex:1"><label class="muted">Panel IP</label>
+          <input value="${p.ip || ''}" data-pi="${pi}" data-f="ip" placeholder="10.10.61.11"></div>
+        <div style="flex:1"><label class="muted">Label</label>
+          <input value="${p.label || ''}" data-pi="${pi}" data-f="label" placeholder="PCR 101 Panel"></div>
+        <div style="width:200px"><label class="muted">Layout</label>
+          <select data-pi="${pi}" data-f="layout">
+            <option value="1080"${p.layout === '1080' ? ' selected' : ''}>1920 × 1080</option>
+            <option value="strip"${p.layout === 'strip' ? ' selected' : ''}>1835 × 291 (strip)</option>
+          </select></div>
+        <div style="align-self:flex-end"><button class="btn sm del" data-delpanel="${pi}">Remove</button></div>
+      </div>
+      <div style="margin-top:14px"><label class="muted">Cards this panel controls</label>
+        <div class="inline" id="cardChips-${pi}" style="margin-top:6px"></div>
+      </div>
+      <div id="filters-${pi}" style="margin-top:14px"></div>`;
+    host.appendChild(box);
+
+    // field bindings
+    box.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('input', (e) => {
+      config.panels[pi][e.target.dataset.f] = e.target.value;
+    }));
+    box.querySelector('[data-delpanel]').addEventListener('click', () => {
+      config.panels.splice(pi, 1); renderPanels();
+    });
+
+    // card chips
+    const chips = box.querySelector(`#cardChips-${pi}`);
+    config.cards.forEach((c) => {
+      if (!c.id) return;
+      const on = p.cardIds.includes(c.id);
+      const chip = document.createElement('button');
+      chip.className = 'chip' + (on ? ' on' : '');
+      chip.textContent = c.label || c.id;
+      chip.addEventListener('click', () => {
+        const idx = p.cardIds.indexOf(c.id);
+        if (idx >= 0) p.cardIds.splice(idx, 1); else p.cardIds.push(c.id);
+        renderPanels();
+      });
+      chips.appendChild(chip);
+    });
+
+    renderFilters(pi);
+  });
+}
+
+// Per-head snapshot filters: for each assigned card, probe heads + snapshots,
+// then let the admin restrict which snapshots appear for each head on this panel.
+function renderFilters(pi) {
+  const p = config.panels[pi];
+  const host = $(`filters-${pi}`); host.innerHTML = '';
+  if (!p.cardIds.length) return;
+
+  const details = document.createElement('details');
+  details.innerHTML = `<summary>Per-head snapshot filters (${Object.keys(p.snapshotFilters).length} set)</summary>`;
+  const body = document.createElement('div');
+  body.className = 'filterbox';
+  body.innerHTML = `<div class="muted">Leave a head untouched to allow all its snapshots. Tick snapshots to restrict to only those.</div>
+    <div class="inline" style="margin-top:8px">
+      <button class="btn sm ghost" data-probe="${pi}">Probe cards (load heads &amp; snapshots)</button>
+    </div>
+    <div id="probeOut-${pi}" style="margin-top:10px"></div>`;
+  details.appendChild(body); host.appendChild(details);
+
+  body.querySelector(`[data-probe="${pi}"]`).addEventListener('click', () => probePanel(pi));
+}
+
+async function probePanel(pi) {
+  const p = config.panels[pi];
+  const out = $(`probeOut-${pi}`); out.innerHTML = 'Probing…';
+  const blocks = [];
+  for (const cardId of p.cardIds) {
+    try {
+      const [heads, snaps] = await Promise.all([
+        fetch(`/api/admin/cards/${cardId}/heads`, { headers: headers() }).then(r => r.json()),
+        fetch(`/api/admin/cards/${cardId}/snapshots`, { headers: headers() }).then(r => r.json()),
+      ]);
+      blocks.push({ cardId, heads, snaps });
+    } catch (e) {
+      blocks.push({ cardId, error: e.message });
+    }
+  }
+
+  out.innerHTML = '';
+  blocks.forEach(({ cardId, heads, snaps, error }) => {
+    const card = config.cards.find(c => c.id === cardId);
+    const wrap = document.createElement('div');
+    wrap.style.marginBottom = '16px';
+    wrap.innerHTML = `<div style="font-weight:600;margin-bottom:6px">${card?.label || cardId}</div>`;
+    if (error) { wrap.innerHTML += `<div class="muted" style="color:var(--danger)">${error}</div>`; out.appendChild(wrap); return; }
+
+    heads.forEach((h) => {
+      const key = `${cardId}::${h.uuid}`;
+      const selected = p.snapshotFilters[key] || null;
+      const hd = document.createElement('div');
+      hd.style.margin = '8px 0';
+      hd.innerHTML = `<div class="muted">Head: <b>${h.name || h.uuid}</b> — ${selected ? selected.length + ' allowed' : 'all allowed'}</div>`;
+      const list = document.createElement('div'); list.className = 'snaplist';
+      snaps.forEach((s) => {
+        const id = `f-${pi}-${cardId}-${h.uuid}-${s.uuid}`;
+        const checked = selected ? selected.includes(s.uuid) : false;
+        const lab = document.createElement('label');
+        lab.innerHTML = `<input type="checkbox" id="${id}" ${checked ? 'checked' : ''}> ${s.name}`;
+        lab.querySelector('input').addEventListener('change', (e) => {
+          let arr = p.snapshotFilters[key] ? [...p.snapshotFilters[key]] : [];
+          if (e.target.checked) arr.push(s.uuid); else arr = arr.filter(u => u !== s.uuid);
+          if (arr.length) p.snapshotFilters[key] = arr; else delete p.snapshotFilters[key];
+        });
+        list.appendChild(lab);
+      });
+      hd.appendChild(list);
+      wrap.appendChild(hd);
+    });
+    out.appendChild(wrap);
+  });
+}
+
+$('addPanel').addEventListener('click', () => {
+  config.panels.push({ ip: '', label: '', layout: '1080', cardIds: [], snapshotFilters: {} });
+  renderPanels();
+});
+
+$('reload').addEventListener('click', loadConfig);
+$('save').addEventListener('click', saveConfig);
+loadConfig();

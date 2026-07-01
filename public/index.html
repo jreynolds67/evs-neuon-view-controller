@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Neuron MV Snapshot Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div>
+        <div class="title" id="panelLabel">Neuron MV Control</div>
+        <div class="sub" id="panelSub">Locating panel…</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="pill" id="linkPill">connecting</div>
+    </div>
+
+    <div class="steps" id="steps">
+      <div class="step" data-step="card"><span class="dot">1</span> Card</div>
+      <span class="sep">›</span>
+      <div class="step" data-step="head"><span class="dot">2</span> Head</div>
+      <span class="sep">›</span>
+      <div class="step" data-step="snap"><span class="dot">3</span> Snapshot</div>
+      <span class="sep">›</span>
+      <div class="step" data-step="confirm"><span class="dot">4</span> Confirm</div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-head">
+        <h2 id="stageTitle">Select a card</h2>
+        <span class="hint" id="stageHint"></span>
+      </div>
+      <div class="grid" id="grid"></div>
+    </div>
+
+    <div class="actionbar">
+      <button class="btn ghost" id="backBtn" disabled>Back</button>
+      <div class="grow"></div>
+      <button class="btn ghost" id="restartBtn">Start over</button>
+    </div>
+  </div>
+
+  <!-- Confirm overlay -->
+  <div class="overlay" id="overlay">
+    <div class="sheet">
+      <h3>Confirm snapshot recall</h3>
+      <div class="sub" style="color:var(--ink-dim)">This applies one snapshot head to one live head. No other settings change.</div>
+      <div class="confirm-lines" id="confirmLines"></div>
+      <div class="row">
+        <button class="btn ghost" id="cancelBtn">Cancel</button>
+        <button class="btn arm" id="fireBtn">Load snapshot</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
