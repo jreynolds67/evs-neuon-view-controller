@@ -238,12 +238,27 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 
 const upstream = new Map(); // cardId -> { ws, subscribers:Set }
 
+// Board WebSocket transport. Defaults to wss (boards using HTTPS also secure the WS)
+// with self-signed certs accepted, matching the board API client. Override with:
+//   BOARD_WS_SCHEME  : "wss" (default) or "ws"
+//   BOARD_WS_PORT    : optional explicit port
+const WS_SCHEME = (process.env.BOARD_WS_SCHEME || (process.env.BOARD_SCHEME === 'http' ? 'ws' : 'wss')).toLowerCase();
+const WS_PORT = process.env.BOARD_WS_PORT || '';
+const WS_REJECT_UNAUTHORIZED = String(process.env.BOARD_TLS_REJECT_UNAUTHORIZED || 'false') === 'true';
+
+function boardWsUrl(ip) {
+  const suffix = WS_PORT ? `:${WS_PORT}` : '';
+  return `${WS_SCHEME}://${ip}${suffix}`;
+}
+
 function ensureUpstream(cardId, boardIp) {
   let entry = upstream.get(cardId);
   if (entry && entry.ws && entry.ws.readyState === WebSocket.OPEN) return entry;
   if (!entry) { entry = { ws: null, subscribers: new Set() }; upstream.set(cardId, entry); }
 
-  const ws = new WebSocket(`ws://${boardIp}`);
+  // For wss to a self-signed board, disable cert rejection for THIS socket only.
+  const wsOpts = WS_SCHEME === 'wss' ? { rejectUnauthorized: WS_REJECT_UNAUTHORIZED } : {};
+  const ws = new WebSocket(boardWsUrl(boardIp), wsOpts);
   entry.ws = ws;
   ws.on('message', (data) => {
     for (const sub of entry.subscribers) {

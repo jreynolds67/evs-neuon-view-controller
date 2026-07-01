@@ -1,15 +1,42 @@
 // server/board.js
-// Thin client for a single EVS Neuron View board API (http://<board_ip>/api/v1/...).
+// Thin client for a single EVS Neuron View board API.
+// Boards speak HTTPS with a self-signed certificate (default), so we use a scoped
+// HTTPS agent that accepts the board's cert WITHOUT weakening TLS for any other
+// outbound request in the process.
+//
 // The ONLY restore path exposed here is a partial, per-head restore. A full restore
 // cannot be constructed through this module — every restore flag except the partial
 // head map is hard-coded to false.
 
+import { Agent } from 'undici';
 import { log, describeError } from './logger.js';
 
 const API_TIMEOUT_MS = 8000;
 
+// Configurable so this adapts if a site fronts the boards differently.
+//   BOARD_SCHEME  : "https" (default) or "http"
+//   BOARD_PORT    : default 443 for https, 80 for http; set to override
+//   BOARD_TLS_REJECT_UNAUTHORIZED : "true" to enforce cert validation (default false,
+//                   because boards ship self-signed certs). Only these board calls are
+//                   affected — global TLS is untouched.
+const SCHEME = (process.env.BOARD_SCHEME || 'https').toLowerCase();
+const PORT = process.env.BOARD_PORT || (SCHEME === 'https' ? '443' : '80');
+const REJECT_UNAUTHORIZED = String(process.env.BOARD_TLS_REJECT_UNAUTHORIZED || 'false') === 'true';
+
+// One reusable agent scoped to board requests. For HTTPS with self-signed certs we set
+// rejectUnauthorized:false here only — fetch() calls elsewhere use the default agent
+// and remain fully validated.
+const boardAgent = SCHEME === 'https'
+  ? new Agent({ connect: { rejectUnauthorized: REJECT_UNAUTHORIZED } })
+  : undefined;
+
+function portSuffix() {
+  const isDefault = (SCHEME === 'https' && PORT === '443') || (SCHEME === 'http' && PORT === '80');
+  return isDefault ? '' : `:${PORT}`;
+}
+
 function boardBase(ip) {
-  return `http://${ip}/api/v1`;
+  return `${SCHEME}://${ip}${portSuffix()}/api/v1`;
 }
 
 async function boardFetch(ip, path, options = {}) {
@@ -21,6 +48,7 @@ async function boardFetch(ip, path, options = {}) {
   try {
     const res = await fetch(url, {
       ...options,
+      dispatcher: boardAgent,
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     });

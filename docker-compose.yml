@@ -13,6 +13,13 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       PORT: "8080"
       CONFIG_PATH: /data/config.json
+      # Board transport. Neuron boards use HTTPS with a self-signed cert by default.
+      BOARD_SCHEME: ${BOARD_SCHEME:-https}
+      # BOARD_PORT: "443"                 # override if the API is on a nonstandard port
+      # BOARD_WS_SCHEME: "wss"            # ws or wss; defaults to match BOARD_SCHEME
+      # BOARD_WS_PORT: ""                 # override if the board WS is on a specific port
+      # Set to "true" only if boards present a CA-trusted cert (rare on broadcast gear).
+      BOARD_TLS_REJECT_UNAUTHORIZED: ${BOARD_TLS_REJECT_UNAUTHORIZED:-false}
     volumes:
       - neuron_config:/data
 
