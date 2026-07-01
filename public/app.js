@@ -185,7 +185,6 @@ function openConfirm() {
     ['Target head', `${state.head.name}`],
     ['Snapshot', state.snap.name],
     ['Source head', state.srcHead.name || state.srcHead.uuid],
-    ['Scope', 'This head only — no other settings change'],
   ];
   $('confirmLines').innerHTML = lines.map(([l, v]) =>
     `<div class="cline"><span class="lbl">${l}</span><span class="val"></span></div>`).join('');

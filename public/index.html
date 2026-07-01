@@ -10,27 +10,6 @@
 </head>
 <body>
   <div class="app">
-    <div class="topbar">
-      <div>
-        <div class="title" id="panelLabel">Neuron MV Control</div>
-        <div class="sub" id="panelSub">Locating panel…</div>
-      </div>
-      <div class="spacer"></div>
-      <div class="pill" id="linkPill">connecting</div>
-    </div>
-
-    <div class="steps" id="steps">
-      <div class="step" data-step="card"><span class="dot">1</span> Card</div>
-      <span class="sep">›</span>
-      <div class="step" data-step="head"><span class="dot">2</span> Head</div>
-      <span class="sep">›</span>
-      <div class="step" data-step="snap"><span class="dot">3</span> Snapshot</div>
-      <span class="sep">›</span>
-      <div class="step" data-step="source"><span class="dot">4</span> Source</div>
-      <span class="sep">›</span>
-      <div class="step" data-step="confirm"><span class="dot">5</span> Confirm</div>
-    </div>
-
     <div class="stage">
       <div class="stage-head">
         <h2 id="stageTitle">Select a card</h2>
@@ -40,8 +19,28 @@
     </div>
 
     <div class="actionbar">
-      <button class="btn ghost" id="backBtn" disabled>Back</button>
+      <div class="panelinfo">
+        <div class="panelinfo-main">
+          <span class="panelinfo-label" id="panelLabel">Neuron MV Control</span>
+          <span class="pill" id="linkPill">connecting</span>
+        </div>
+        <div class="panelinfo-sub" id="panelSub">Locating panel…</div>
+      </div>
+
+      <div class="steps" id="steps">
+        <div class="step" data-step="card"><span class="dot">1</span> Card</div>
+        <span class="sep">›</span>
+        <div class="step" data-step="head"><span class="dot">2</span> Head</div>
+        <span class="sep">›</span>
+        <div class="step" data-step="snap"><span class="dot">3</span> Snapshot</div>
+        <span class="sep">›</span>
+        <div class="step" data-step="source"><span class="dot">4</span> Source</div>
+        <span class="sep">›</span>
+        <div class="step" data-step="confirm"><span class="dot">5</span> Confirm</div>
+      </div>
+
       <div class="grow"></div>
+      <button class="btn ghost" id="backBtn" disabled>Back</button>
       <button class="btn ghost" id="restartBtn">Start over</button>
     </div>
   </div>
@@ -50,7 +49,6 @@
   <div class="overlay" id="overlay">
     <div class="sheet">
       <h3>Confirm snapshot recall</h3>
-      <div class="sub" style="color:var(--ink-dim)">This applies one snapshot head to one live head. No other settings change.</div>
       <div class="confirm-lines" id="confirmLines"></div>
       <div class="row">
         <button class="btn ghost" id="cancelBtn">Cancel</button>
