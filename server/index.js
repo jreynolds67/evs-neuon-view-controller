@@ -59,7 +59,10 @@ app.get('/api/panel/me', async (req, res) => {
     .map((id) => getCardById(config, id))
     .filter(Boolean)
     .map((c) => ({ id: c.id, label: c.label })); // never leak board IPs to the panel
-  res.json({ ip, label: panel.label, layout: panel.layout || '1080', cards });
+  res.json({
+    ip, label: panel.label, layout: panel.layout || '1080', cards,
+    showUuids: config.settings?.showUuids !== false,
+  });
 });
 
 // Heads currently live on a card.
@@ -252,6 +255,7 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
   if (!next || !Array.isArray(next.cards) || !Array.isArray(next.panels)) {
     return res.status(400).json({ error: 'Config must have cards[] and panels[]' });
   }
+  next.settings = { showUuids: true, ...(next.settings || {}) };
   await saveConfig(next);
   res.json({ ok: true });
 });

@@ -9,6 +9,7 @@ const state = {
   head: null,     // target head { uuid, name }
   snap: null,     // { uuid, name, ... }
   srcHead: null,  // snapshot source head { uuid, name }
+  showUuids: true,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -47,10 +48,11 @@ function setSteps() {
 function cardEl({ k, v, uuid, onClick, selected }) {
   const b = document.createElement('button');
   b.className = 'card' + (selected ? ' selected' : '');
-  b.innerHTML = `<span class="k"></span>${v ? '<span class="v"></span>' : ''}${uuid ? '<span class="uuid mono"></span>' : ''}`;
+  const showUuid = uuid && state.showUuids;
+  b.innerHTML = `<span class="k"></span>${v ? '<span class="v"></span>' : ''}${showUuid ? '<span class="uuid mono"></span>' : ''}`;
   b.querySelector('.k').textContent = k;
   if (v) b.querySelector('.v').textContent = v;
-  if (uuid) b.querySelector('.uuid').textContent = uuid;
+  if (showUuid) b.querySelector('.uuid').textContent = uuid;
   b.addEventListener('click', onClick);
   return b;
 }
@@ -209,7 +211,8 @@ async function renderHeads() {
           <span class="uuid mono"></span>
         </div>`;
       card.querySelector('.k').textContent = h.name || 'Head';
-      card.querySelector('.uuid').textContent = h.uuid;
+      if (state.showUuids) card.querySelector('.uuid').textContent = h.uuid;
+      else card.querySelector('.uuid').remove();
       card.addEventListener('click', () => { state.head = h; renderSnapshots(); });
       grid.appendChild(card);
       // Lazy-load the live layout thumbnail for this head.
@@ -300,7 +303,8 @@ function renderSourceHeads(heads) {
         <span class="uuid mono"></span>
       </div>`;
     card.querySelector('.k').textContent = h.name || 'Head';
-    card.querySelector('.uuid').textContent = h.uuid;
+    if (state.showUuids) card.querySelector('.uuid').textContent = h.uuid;
+    else card.querySelector('.uuid').remove();
     card.addEventListener('click', () => { state.srcHead = h; openConfirm(); });
     grid.appendChild(card);
     const slot = card.querySelector('[data-prev]');
@@ -329,15 +333,10 @@ function renderSourceHeads(heads) {
 
 function openConfirm() {
   state.step = 'confirm'; setSteps();
-  const lines = [
-    ['Card', state.card.label],
-    ['Target head', `${state.head.name}`],
-    ['Snapshot', state.snap.name],
-    ['Source head', state.srcHead.name || state.srcHead.uuid],
-  ];
-  $('confirmLines').innerHTML = lines.map(([l, v]) =>
-    `<div class="cline"><span class="lbl">${l}</span><span class="val"></span></div>`).join('');
-  document.querySelectorAll('#confirmLines .val').forEach((el, i) => { el.textContent = lines[i][1]; });
+  // Compact one-line summary so the dialog fits the short strip panels.
+  $('confirmLines').innerHTML = '<div class="confirm-summary"></div>';
+  $('confirmLines').querySelector('.confirm-summary').textContent =
+    `Load "${state.snap.name}" onto ${state.head.name}?`;
   $('overlay').classList.add('show');
 }
 
@@ -412,6 +411,7 @@ async function boot() {
 
   try {
     state.panel = await api('/api/panel/me');
+    state.showUuids = state.panel.showUuids !== false;
     document.body.classList.toggle('strip', state.panel.layout === 'strip');
     $('panelLabel').textContent = state.panel.label || 'Neuron MV Control';
     $('panelSub').textContent = `${state.panel.ip} · ${state.panel.cards.length} card(s)`;

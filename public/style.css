@@ -157,12 +157,20 @@ body.strip .group-head { padding: 4px 2px 2px; font-size: 11px; }
 }
 .sheet h3 { font-size: 20px; margin-bottom: 6px; }
 .confirm-lines { margin: 16px 0; display: grid; gap: 10px; }
+.confirm-summary { font-size: 17px; line-height: 1.4; }
 .cline { display: flex; justify-content: space-between; gap: 16px;
   padding: 12px 14px; background: var(--panel-2); border-radius: 8px; }
 .cline .lbl { color: var(--ink-dim); font-size: 13px; }
 .cline .val { font-weight: 600; text-align: right; }
 .sheet .row { display: flex; gap: 12px; margin-top: 8px; }
 .sheet .row .btn { flex: 1; }
+
+/* Compact confirm sheet for the short strip panels. */
+body.strip .sheet { padding: 14px 18px; border-radius: 10px; }
+body.strip .sheet h3 { font-size: 16px; margin-bottom: 2px; }
+body.strip .confirm-lines { margin: 10px 0; }
+body.strip .confirm-summary { font-size: 15px; }
+body.strip .sheet .row .btn { min-height: 46px; }
 
 /* ---- Toast ---- */
 .toast {

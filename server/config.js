@@ -26,7 +26,7 @@ const CONFIG_PATH = process.env.CONFIG_PATH || '/data/config.json';
 //   ]
 // }
 
-const DEFAULT_CONFIG = { cards: [], panels: [] };
+const DEFAULT_CONFIG = { cards: [], panels: [], settings: { showUuids: true } };
 
 let cache = null;
 
@@ -39,9 +39,14 @@ export async function loadConfig() {
   if (cache) return cache;
   try {
     const raw = await readFile(CONFIG_PATH, 'utf8');
-    cache = { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    cache = {
+      ...DEFAULT_CONFIG,
+      ...parsed,
+      settings: { ...DEFAULT_CONFIG.settings, ...(parsed.settings || {}) },
+    };
   } catch {
-    cache = { ...DEFAULT_CONFIG };
+    cache = { ...DEFAULT_CONFIG, settings: { ...DEFAULT_CONFIG.settings } };
   }
   return cache;
 }

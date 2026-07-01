@@ -24,6 +24,8 @@ async function loadConfig() {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
     config = await res.json();
     config.cards ||= []; config.panels ||= [];
+    config.settings ||= { showUuids: true };
+    $('showUuids').checked = config.settings.showUuids !== false;
     renderCards(); renderPanels();
     $('loadState').textContent = 'Loaded';
   } catch (e) { $('loadState').textContent = 'Error: ' + e.message; }
@@ -67,6 +69,11 @@ $('addCard').addEventListener('click', () => {
   const n = config.cards.length + 1;
   config.cards.push({ id: `mv${n}`, label: `MV Card ${n}`, ip: '' });
   renderCards(); renderPanels();
+});
+
+$('showUuids').addEventListener('change', (e) => {
+  config.settings ||= {};
+  config.settings.showUuids = e.target.checked;
 });
 
 // ---- Panels ---------------------------------------------------------------
