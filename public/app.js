@@ -385,6 +385,32 @@ function connectWs(cardId) {
   ws.onmessage = () => { /* board pushed an update; lists refresh on next navigation */ };
 }
 
+// Persistent control channel, opened on boot and held for the session. The server sends
+// { type:'reload' } after a config save so panels refresh immediately. Auto-reconnects
+// if the socket drops (e.g. server redeploy), so panels recover on their own.
+let controlWs = null;
+function connectControlWs() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const url = `${proto}://${location.host}/ws?control=1`;
+  console.log('[control] connecting to', url);
+  try {
+    controlWs = new WebSocket(url);
+  } catch (err) {
+    console.error('[control] WebSocket construction failed:', err);
+    setTimeout(connectControlWs, 3000);
+    return;
+  }
+  controlWs.onopen = () => console.log('[control] connected');
+  controlWs.onmessage = (ev) => {
+    console.log('[control] message:', ev.data);
+    let msg = null;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg && msg.type === 'reload') location.reload();
+  };
+  controlWs.onclose = () => { console.log('[control] closed, retrying in 3s'); setTimeout(connectControlWs, 3000); };
+  controlWs.onerror = (e) => { console.error('[control] error', e); try { controlWs.close(); } catch {} };
+}
+
 // ---- Fullscreen input-group editor (1080 layout only) ---------------------
 // Shows a head's windows large; each window displays its current input group number and
 // is tappable to enter a new number, which repoints that window's widget to the matching
@@ -521,4 +547,9 @@ async function boot() {
     showEmpty(`${e.message}. Add this panel's IP in the admin page.`);
   }
 }
+// Open the control socket immediately at script load — BEFORE boot() and outside its
+// try/scope — so a reload signal works regardless of any error in the rest of startup.
+// Guarded so that if it somehow throws, it can't prevent boot() from running.
+try { connectControlWs(); } catch (e) { console.error('[control] failed to start:', e); }
+
 boot();
