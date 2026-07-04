@@ -45,32 +45,42 @@ async function boardFetch(ip, path, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const url = `${boardBase(ip)}${path}`;
   const started = Date.now();
+  const raw = options.raw === true;
+  const opts = { ...options };
+  delete opts.raw;
   try {
     const res = await fetch(url, {
-      ...options,
+      ...opts,
       dispatcher: boardAgent,
       signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      headers: raw
+        ? { ...(opts.headers || {}) }
+        : { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     });
-    const text = await res.text();
-    let body;
-    try { body = text ? JSON.parse(text) : null; } catch { body = text; }
     const durationMs = Date.now() - started;
 
     if (!res.ok) {
+      const text = await res.text().catch(() => '');
       log({ ip, path, method, url, status: res.status, durationMs, ok: false,
-        error: `HTTP ${res.status}`,
-        detail: typeof body === 'string' ? body.slice(0, 300) : JSON.stringify(body).slice(0, 300) });
+        error: `HTTP ${res.status}`, detail: text.slice(0, 300) });
       const err = new Error(`Board ${ip} ${path} -> ${res.status}`);
       err.status = res.status;
-      err.body = body;
+      err.body = text;
       throw err;
     }
 
+    if (raw) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      log({ ip, path, method, url, status: res.status, durationMs, ok: true, detail: `${buf.length} bytes` });
+      return buf;
+    }
+
+    const text = await res.text();
+    let body;
+    try { body = text ? JSON.parse(text) : null; } catch { body = text; }
     log({ ip, path, method, url, status: res.status, durationMs, ok: true });
     return body;
   } catch (e) {
-    // Only log connection-level failures here; HTTP errors were already logged above.
     if (e.status === undefined) {
       const durationMs = Date.now() - started;
       const { code, detail } = describeError(e);
@@ -139,6 +149,36 @@ export function normalizeSnapshotEntry(entry) {
 
 export async function getSnapshotMeta(ip, uuid) {
   return boardFetch(ip, `/snapshots/${uuid}`);
+}
+
+// Set a snapshot's `shared` flag. MetadataChange is a full-object PUT (all fields
+// required), so we take the current metadata and change only `shared`.
+export async function setSnapshotShared(ip, snap, shared = true) {
+  const change = {
+    deleted: snap.deleted === true ? true : false,
+    description: snap.description || '',
+    name: snap.name || '',
+    path: snap.path || '',
+    shared,
+    timestamp: snap.timestamp || Math.floor(Date.now() / 1000),
+    type: 'snapshot',
+    uuid: snap.uuid,
+  };
+  return boardFetch(ip, `/snapshots/${snap.uuid}`, {
+    method: 'PUT',
+    body: JSON.stringify(change),
+  });
+}
+
+// Export snapshots as a single binary file. `pathWildcard` scopes by folder path (e.g.
+// "*" for everything, "Layout Presets*" for a folder); `snapshots` optionally narrows to
+// specific UUIDs. Returns a Buffer (the export file bytes).
+export async function exportSnapshots(ip, { pathWildcard = '*', snapshots = [] } = {}) {
+  return boardFetch(ip, '/snapshots/export', {
+    method: 'POST',
+    body: JSON.stringify({ pathWildcard, snapshots }),
+    raw: true,
+  });
 }
 
 // Live heads currently configured on the board (target heads).

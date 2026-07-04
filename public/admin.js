@@ -29,6 +29,7 @@ async function loadConfig() {
     $('showUuids').checked = config.settings.showUuids !== false;
     renderCards(); renderPanels(); renderHeadFilterCards();
     $('loadState').textContent = 'Loaded';
+    if (typeof refreshBackup === 'function') refreshBackup();
   } catch (e) { $('loadState').textContent = 'Error: ' + e.message; }
 }
 
@@ -495,6 +496,103 @@ function renderReachRow() {
   });
 }
 
+// ---- Share sweep ----------------------------------------------------------
+
+async function refreshSweep() {
+  try {
+    const s = await fetch('/api/admin/sharesweep', { headers: headers() }).then(r => r.json());
+    const when = s.lastRun ? new Date(s.lastRun).toLocaleTimeString() : 'never';
+    $('sweepState').textContent = s.enabled
+      ? `Enabled · last run ${when} · shared ${s.shared}, checked ${s.checked}`
+      : `Disabled (set SHARE_SWEEP_ENABLE=true) · last manual run ${when}`;
+  } catch (e) { $('sweepState').textContent = 'Error: ' + e.message; }
+}
+$('sweepRun').addEventListener('click', async () => {
+  $('sweepState').textContent = 'Running…';
+  try {
+    const s = await fetch('/api/admin/sharesweep/run', { method: 'POST', headers: headers() }).then(r => r.json());
+    $('sweepState').textContent = `Shared ${s.shared}, checked ${s.checked}`;
+  } catch (e) { $('sweepState').textContent = 'Error: ' + e.message; }
+});
+
+// ---- Backup ---------------------------------------------------------------
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+async function refreshBackup() {
+  try {
+    const data = await fetch('/api/admin/backup', { headers: headers() }).then(r => r.json());
+    const c = data.config || {};
+    $('bkEnabled').checked = !!c.enabled;
+    $('bkTime').value = c.timeHHMM || '03:00';
+    $('bkRetention').value = c.retentionDays || 30;
+    // Populate board dropdown from current cards.
+    $('bkCard').innerHTML = '<option value="">— select —</option>' +
+      config.cards.filter(x => x.id).map(x => `<option value="${x.id}"${x.id === c.cardId ? ' selected' : ''}>${x.label || x.id}</option>`).join('');
+    renderBackupFiles(data.files || []);
+    const st = data.status || {};
+    if (st.lastRun) $('bkState').textContent = `Last backup ${new Date(st.lastRun).toLocaleString()}` + (st.lastError ? ` · ${st.lastError}` : '');
+  } catch (e) { $('bkState').textContent = 'Error: ' + e.message; }
+}
+
+function renderBackupFiles(files) {
+  const tb = $('bkFiles'); tb.innerHTML = '';
+  if (!files.length) { tb.innerHTML = '<tr><td colspan="4" class="muted">No backups yet.</td></tr>'; return; }
+  files.forEach((f) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="mono" style="font-size:12px">${f.file}</td>
+      <td>${fmtBytes(f.bytes)}</td>
+      <td>${new Date(f.mtime).toLocaleString()}</td>
+      <td><a class="btn sm ghost" href="/api/admin/backup/download/${encodeURIComponent(f.file)}${token() ? '' : ''}" download>Download</a></td>`;
+    // If a token is set, downloads need the header — use a JS handler instead of a bare link.
+    if (token()) {
+      const a = tr.querySelector('a');
+      a.removeAttribute('href');
+      a.addEventListener('click', () => downloadWithToken(f.file));
+    }
+    tb.appendChild(tr);
+  });
+}
+
+async function downloadWithToken(file) {
+  const res = await fetch(`/api/admin/backup/download/${encodeURIComponent(file)}`, { headers: headers() });
+  if (!res.ok) { toast('Download failed', 'err'); return; }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = file; document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+$('bkSave').addEventListener('click', async () => {
+  $('bkState').textContent = 'Saving…';
+  try {
+    const body = {
+      enabled: $('bkEnabled').checked,
+      cardId: $('bkCard').value,
+      timeHHMM: $('bkTime').value.trim(),
+      retentionDays: parseInt($('bkRetention').value, 10) || 30,
+    };
+    const r = await fetch('/api/admin/backup', { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+    $('bkState').textContent = 'Schedule saved';
+  } catch (e) { $('bkState').textContent = 'Error: ' + e.message; }
+});
+
+$('bkRun').addEventListener('click', async () => {
+  $('bkState').textContent = 'Backing up… (may take a moment)';
+  try {
+    const s = await fetch('/api/admin/backup/run', { method: 'POST', headers: headers() }).then(r => r.json());
+    $('bkState').textContent = s.lastError ? `Error: ${s.lastError}` : `Wrote ${(s.lastFiles || []).length} file(s)`;
+    refreshBackup();
+  } catch (e) { $('bkState').textContent = 'Error: ' + e.message; }
+});
+
 loadConfig();
 refreshLog(true);
 startLogAuto();
+refreshSweep();

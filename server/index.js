@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
 
 import {
   loadConfig, saveConfig, getCardById, getPanelByIp,
@@ -17,6 +18,10 @@ import {
   getInputGroups, setWidgetGroup,
 } from './board.js';
 import { getEntries, clear as clearLog } from './logger.js';
+import { startShareSweep, shareSweepStatus, runShareSweepNow } from './sharesweep.js';
+import {
+  startBackupScheduler, runBackupNow, backupStatus, listBackups, backupFilePath,
+} from './backup.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, '..', 'public');
@@ -320,6 +325,11 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
   next.settings = { showUuids: true, ...(next.settings || {}) };
   if (!next.headFilters || typeof next.headFilters !== 'object') next.headFilters = {};
   (next.panels || []).forEach((p) => { if (!Array.isArray(p.heads)) p.heads = []; });
+  // Preserve backup config (managed via its own endpoint) if the admin PUT omits it.
+  if (next.backup === undefined) {
+    const existing = await loadConfig();
+    if (existing.backup) next.backup = existing.backup;
+  }
   await saveConfig(next);
   // Tell every connected panel to reload so config changes apply immediately.
   broadcastControl({ type: 'reload' });
@@ -372,6 +382,53 @@ app.get('/api/admin/log', requireAdmin, (req, res) => {
 app.delete('/api/admin/log', requireAdmin, (_req, res) => {
   clearLog();
   res.json({ ok: true });
+});
+
+// --- Share sweep (auto-share unshared snapshots) ---------------------------
+
+app.get('/api/admin/sharesweep', requireAdmin, (_req, res) => {
+  res.json(shareSweepStatus());
+});
+app.post('/api/admin/sharesweep/run', requireAdmin, async (_req, res) => {
+  res.json(await runShareSweepNow());
+});
+
+// --- Scheduled backups -----------------------------------------------------
+
+app.get('/api/admin/backup', requireAdmin, async (_req, res) => {
+  const config = await loadConfig();
+  res.json({ config: config.backup || {}, status: backupStatus(), files: await listBackups() });
+});
+
+app.put('/api/admin/backup', requireAdmin, async (req, res) => {
+  const { enabled, cardId, timeHHMM, retentionDays } = req.body || {};
+  if (timeHHMM && !/^\d{2}:\d{2}$/.test(timeHHMM)) {
+    return res.status(400).json({ error: 'timeHHMM must be HH:MM' });
+  }
+  const config = await loadConfig();
+  config.backup = {
+    enabled: !!enabled,
+    cardId: cardId || '',
+    timeHHMM: timeHHMM || '03:00',
+    retentionDays: Math.max(1, Math.min(365, parseInt(retentionDays, 10) || 30)),
+  };
+  await saveConfig(config);
+  res.json({ ok: true, config: config.backup });
+});
+
+app.post('/api/admin/backup/run', requireAdmin, async (_req, res) => {
+  res.json(await runBackupNow());
+});
+
+app.get('/api/admin/backup/files', requireAdmin, async (_req, res) => {
+  res.json({ files: await listBackups() });
+});
+
+// Download a backup file. Filename validated in backupFilePath to prevent traversal.
+app.get('/api/admin/backup/download/:file', requireAdmin, async (req, res) => {
+  const path = backupFilePath(req.params.file);
+  if (!path || !existsSync(path)) return res.status(404).json({ error: 'Not found' });
+  res.download(path, req.params.file);
 });
 
 // Reachability probe: try a lightweight GET against a card's board and report the
@@ -495,6 +552,8 @@ wss.on('connection', async (client, req) => {
 
 server.listen(PORT, () => {
   console.log(`Neuron MV Control listening on :${PORT}`);
+  startShareSweep();
+  startBackupScheduler();
   console.log(`Config path: ${process.env.CONFIG_PATH || '/data/config.json'}`);
   if (!ADMIN_TOKEN) console.log('ADMIN_TOKEN not set — admin API is open. Set it for production.');
 });
