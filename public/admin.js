@@ -30,6 +30,7 @@ async function loadConfig() {
     renderCards(); renderPanels(); renderHeadFilterCards();
     $('loadState').textContent = 'Loaded';
     if (typeof refreshBackup === 'function') refreshBackup();
+    if (typeof refreshSweep === 'function') refreshSweep();
   } catch (e) { $('loadState').textContent = 'Error: ' + e.message; }
 }
 
@@ -498,20 +499,64 @@ function renderReachRow() {
 
 // ---- Share sweep ----------------------------------------------------------
 
+let sweepCfg = { enabled: false, intervalSec: 60, targets: [] };
+
 async function refreshSweep() {
   try {
-    const s = await fetch('/api/admin/sharesweep', { headers: headers() }).then(r => r.json());
+    const [cfg, s] = await Promise.all([
+      fetch('/api/admin/sharesweep/config', { headers: headers() }).then(r => r.json()),
+      fetch('/api/admin/sharesweep', { headers: headers() }).then(r => r.json()),
+    ]);
+    sweepCfg = { enabled: !!cfg.enabled, intervalSec: cfg.intervalSec || 60, targets: Array.isArray(cfg.targets) ? cfg.targets : [] };
+    $('swEnabled').checked = sweepCfg.enabled;
+    $('swInterval').value = sweepCfg.intervalSec;
+    renderSweepCards();
     const when = s.lastRun ? new Date(s.lastRun).toLocaleTimeString() : 'never';
-    $('sweepState').textContent = s.enabled
-      ? `Enabled · last run ${when} · shared ${s.shared}, checked ${s.checked}`
-      : `Disabled (set SHARE_SWEEP_ENABLE=true) · last manual run ${when}`;
+    $('sweepState').textContent = `Last run ${when}` + (s.lastError ? ` · ${s.lastError}` : ` · shared ${s.shared || 0}, checked ${s.checked || 0}`);
   } catch (e) { $('sweepState').textContent = 'Error: ' + e.message; }
 }
-$('sweepRun').addEventListener('click', async () => {
+
+// Per-card enable chips. Empty targets means "all cards" — represented here by every
+// chip being on; toggling any off makes the set explicit.
+function renderSweepCards() {
+  const host = $('swCards'); host.innerHTML = '';
+  const allSelected = sweepCfg.targets.length === 0;
+  config.cards.filter(c => c.id).forEach((c) => {
+    const on = allSelected || sweepCfg.targets.includes(c.id);
+    const chip = document.createElement('button');
+    chip.className = 'chip' + (on ? ' on' : '');
+    chip.textContent = c.label || c.id;
+    chip.addEventListener('click', () => {
+      // Materialize "all" into an explicit list on first toggle.
+      let list = sweepCfg.targets.length ? [...sweepCfg.targets]
+        : config.cards.filter(x => x.id).map(x => x.id);
+      if (list.includes(c.id)) list = list.filter(x => x !== c.id); else list.push(c.id);
+      sweepCfg.targets = list;
+      renderSweepCards();
+    });
+    host.appendChild(chip);
+  });
+}
+
+$('swSave').addEventListener('click', async () => {
+  $('sweepState').textContent = 'Saving…';
+  try {
+    const body = {
+      enabled: $('swEnabled').checked,
+      intervalSec: parseInt($('swInterval').value, 10) || 60,
+      targets: sweepCfg.targets,
+    };
+    const r = await fetch('/api/admin/sharesweep', { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+    $('sweepState').textContent = 'Saved' + (body.enabled ? ` · sweeping every ${body.intervalSec}s` : ' · disabled');
+  } catch (e) { $('sweepState').textContent = 'Error: ' + e.message; }
+});
+
+$('swRun').addEventListener('click', async () => {
   $('sweepState').textContent = 'Running…';
   try {
     const s = await fetch('/api/admin/sharesweep/run', { method: 'POST', headers: headers() }).then(r => r.json());
-    $('sweepState').textContent = `Shared ${s.shared}, checked ${s.checked}`;
+    $('sweepState').textContent = `Shared ${s.shared || 0}, checked ${s.checked || 0}`;
   } catch (e) { $('sweepState').textContent = 'Error: ' + e.message; }
 });
 
@@ -595,4 +640,3 @@ $('bkRun').addEventListener('click', async () => {
 loadConfig();
 refreshLog(true);
 startLogAuto();
-refreshSweep();

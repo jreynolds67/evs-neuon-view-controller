@@ -146,11 +146,16 @@
     <!-- SHARE SWEEP -->
     <div class="section">
       <h2>Auto-share snapshots</h2>
-      <div class="desc">The server can continuously check every card and mark any unshared snapshot as shared, so new snapshots propagate across boards automatically. Enable with the <span class="mono">SHARE_SWEEP_ENABLE=true</span> environment variable; interval via <span class="mono">SHARE_SWEEP_INTERVAL_MS</span>.</div>
-      <div class="inline" style="gap:10px">
-        <button class="btn sm" id="sweepRun">Run sweep now</button>
+      <div class="desc">Continuously checks the selected cards and marks any unshared snapshot as shared, so new snapshots propagate across boards automatically.</div>
+      <div class="inline" style="gap:12px; flex-wrap:wrap; margin-bottom:10px">
+        <label class="inline" style="gap:6px; cursor:pointer"><input type="checkbox" id="swEnabled" style="width:18px;height:18px"> Enabled</label>
+        <div><label class="muted">Interval (seconds)</label><input id="swInterval" type="number" min="10" max="3600" style="width:100px"></div>
+        <div style="align-self:flex-end"><button class="btn sm" id="swSave">Save</button></div>
+        <div style="align-self:flex-end"><button class="btn sm ghost" id="swRun">Run once now</button></div>
         <span class="muted" id="sweepState"></span>
       </div>
+      <label class="muted">Cards to sweep</label>
+      <div class="inline" id="swCards" style="margin-top:6px"></div>
     </div>
 
     <!-- BACKUP -->

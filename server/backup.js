@@ -39,12 +39,16 @@ export async function runBackupNow() {
   await ensureDir();
   const config = await loadConfig();
   const bcfg = config.backup || {};
-  const card = getCardById(config, bcfg.cardId);
-  if (!card || !card.ip) {
-    status.lastError = 'No valid backup card configured';
+  // Target can be a defined card id OR a raw board IP.
+  let ip = null, label = null;
+  const card = getCardById(config, bcfg.target);
+  if (card && card.ip) { ip = card.ip; label = card.label || card.id; }
+  else if (bcfg.target && /\d+\.\d+\.\d+\.\d+/.test(bcfg.target)) { ip = bcfg.target; label = bcfg.target; }
+  if (!ip) {
+    status.lastError = 'No valid backup target (card or IP) configured';
     return status;
   }
-  const label = safe(card.label || card.id);
+  label = safe(label);
   const date = todayStamp();
   const written = [];
 
@@ -52,7 +56,7 @@ export async function runBackupNow() {
     // Attempt 1: whole board as a single file.
     let ok = false;
     try {
-      const buf = await exportSnapshots(card.ip, { pathWildcard: '*', snapshots: [] });
+      const buf = await exportSnapshots(ip, { pathWildcard: '*', snapshots: [] });
       if (buf && buf.length) {
         const file = `${date}__${label}__all.bin`;
         await writeAtomic(join(BACKUP_DIR, file), buf);
@@ -65,7 +69,7 @@ export async function runBackupNow() {
 
     // Attempt 2 (fallback): per-folder exports.
     if (!ok) {
-      const info = await getSnapshotInfo(card.ip);
+      const info = await getSnapshotInfo(ip);
       const entries = (info.snapshots || [])
         .map(normalizeSnapshotEntry)
         .filter((e) => e.uuid && e.deleted !== true);
@@ -73,7 +77,7 @@ export async function runBackupNow() {
       for (const folder of folders) {
         const wildcard = folder ? `${folder}*` : '*';
         try {
-          const buf = await exportSnapshots(card.ip, { pathWildcard: wildcard, snapshots: [] });
+          const buf = await exportSnapshots(ip, { pathWildcard: wildcard, snapshots: [] });
           if (buf && buf.length) {
             const file = `${date}__${label}__${safe(folder || 'root')}.bin`;
             await writeAtomic(join(BACKUP_DIR, file), buf);
@@ -146,7 +150,7 @@ export function startBackupScheduler() {
     status.nextCheck = Date.now();
     const config = await loadConfig();
     const bcfg = config.backup || {};
-    if (!bcfg.enabled || !bcfg.cardId || !bcfg.timeHHMM) return;
+    if (!bcfg.enabled || !bcfg.target || !bcfg.timeHHMM) return;
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const hhmm = `${p(now.getHours())}:${p(now.getMinutes())}`;

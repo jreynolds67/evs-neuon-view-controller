@@ -18,7 +18,7 @@ import {
   getInputGroups, setWidgetGroup,
 } from './board.js';
 import { getEntries, clear as clearLog } from './logger.js';
-import { startShareSweep, shareSweepStatus, runShareSweepNow } from './sharesweep.js';
+import { startShareSweep, shareSweepStatus, runShareSweepNow, applyShareSweepConfig } from './sharesweep.js';
 import {
   startBackupScheduler, runBackupNow, backupStatus, listBackups, backupFilePath,
 } from './backup.js';
@@ -330,6 +330,10 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
     const existing = await loadConfig();
     if (existing.backup) next.backup = existing.backup;
   }
+  if (next.shareSweep === undefined) {
+    const existing = await loadConfig();
+    if (existing.shareSweep) next.shareSweep = existing.shareSweep;
+  }
   await saveConfig(next);
   // Tell every connected panel to reload so config changes apply immediately.
   broadcastControl({ type: 'reload' });
@@ -388,6 +392,22 @@ app.delete('/api/admin/log', requireAdmin, (_req, res) => {
 
 app.get('/api/admin/sharesweep', requireAdmin, (_req, res) => {
   res.json(shareSweepStatus());
+});
+app.get('/api/admin/sharesweep/config', requireAdmin, async (_req, res) => {
+  const config = await loadConfig();
+  res.json(config.shareSweep || { enabled: false, intervalSec: 60, targets: [] });
+});
+app.put('/api/admin/sharesweep', requireAdmin, async (req, res) => {
+  const { enabled, intervalSec, targets } = req.body || {};
+  const config = await loadConfig();
+  config.shareSweep = {
+    enabled: !!enabled,
+    intervalSec: Math.max(10, Math.min(3600, parseInt(intervalSec, 10) || 60)),
+    targets: Array.isArray(targets) ? targets.filter((t) => typeof t === 'string') : [],
+  };
+  await saveConfig(config);
+  await applyShareSweepConfig(); // apply live without restart
+  res.json({ ok: true, config: config.shareSweep });
 });
 app.post('/api/admin/sharesweep/run', requireAdmin, async (_req, res) => {
   res.json(await runShareSweepNow());

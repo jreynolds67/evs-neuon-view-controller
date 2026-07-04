@@ -1,54 +1,57 @@
 // server/sharesweep.js
-// Periodically polls every card and sets `shared: true` on any snapshot that isn't
+// Periodically checks target boards and sets `shared: true` on any snapshot that isn't
 // already shared, so newly-created snapshots propagate across boards automatically.
 //
-// Controlled by:
-//   SHARE_SWEEP_ENABLE   "true" to run (default false — opt in)
-//   SHARE_SWEEP_INTERVAL_MS  poll interval (default 60000)
+// Fully controlled from the admin UI via config.shareSweep:
+//   { enabled, intervalSec, targets: [ "mv1", "10.10.60.24", ... ] }
+// A target is either a defined card id or a raw board IP. Empty targets = all cards.
 
 import { getSnapshotInfo, normalizeSnapshotEntry, setSnapshotShared } from './board.js';
-import { loadConfig } from './config.js';
-
-const ENABLED = String(process.env.SHARE_SWEEP_ENABLE || 'false') === 'true';
-const INTERVAL_MS = parseInt(process.env.SHARE_SWEEP_INTERVAL_MS || '60000', 10);
+import { loadConfig, getCardById } from './config.js';
 
 let running = false;
 let timer = null;
-const status = { lastRun: null, lastError: null, shared: 0, checked: 0, enabled: ENABLED };
+let currentIntervalSec = null;
+const status = { lastRun: null, lastError: null, shared: 0, checked: 0, enabled: false, targets: [] };
+
+function resolveTargets(config) {
+  const cfg = config.shareSweep || {};
+  const list = Array.isArray(cfg.targets) ? cfg.targets : [];
+  if (!list.length) {
+    return (config.cards || []).filter((c) => c.ip).map((c) => ({ label: c.label || c.id, ip: c.ip }));
+  }
+  return list.map((t) => {
+    const card = getCardById(config, t);
+    if (card && card.ip) return { label: card.label || card.id, ip: card.ip };
+    return { label: t, ip: t };
+  }).filter((x) => x.ip);
+}
 
 async function sweepOnce() {
-  if (running) return; // never overlap runs
+  if (running) return;
   running = true;
   let shared = 0, checked = 0;
   try {
     const config = await loadConfig();
-    for (const card of config.cards || []) {
-      if (!card.ip) continue;
+    const targets = resolveTargets(config);
+    status.targets = targets.map((t) => t.label);
+    for (const t of targets) {
       let info;
-      try {
-        info = await getSnapshotInfo(card.ip);
-      } catch {
-        continue; // unreachable card — skip this cycle
-      }
+      try { info = await getSnapshotInfo(t.ip); } catch { continue; }
       const entries = (info.snapshots || [])
         .map(normalizeSnapshotEntry)
         .filter((e) => e.uuid && e.deleted !== true);
       for (const e of entries) {
         checked++;
-        if (e.shared === true) continue; // already shared
-        try {
-          await setSnapshotShared(card.ip, e, true);
-          shared++;
-        } catch {
-          // leave for next cycle
-        }
+        if (e.shared === true) continue;
+        try { await setSnapshotShared(t.ip, e, true); shared++; } catch {}
       }
     }
     status.lastRun = Date.now();
     status.lastError = null;
     status.shared = shared;
     status.checked = checked;
-    if (shared) console.log(`[share-sweep] shared ${shared} snapshot(s) across ${(config.cards || []).length} card(s)`);
+    if (shared) console.log(`[share-sweep] shared ${shared} snapshot(s) across ${targets.length} target(s)`);
   } catch (e) {
     status.lastError = e.message;
   } finally {
@@ -56,22 +59,33 @@ async function sweepOnce() {
   }
 }
 
-export function startShareSweep() {
-  if (!ENABLED) {
-    console.log('[share-sweep] disabled (set SHARE_SWEEP_ENABLE=true to enable)');
-    return;
+export async function applyShareSweepConfig() {
+  const config = await loadConfig();
+  const cfg = config.shareSweep || {};
+  status.enabled = !!cfg.enabled;
+  const intervalSec = Math.max(10, parseInt(cfg.intervalSec, 10) || 60);
+
+  if (timer && currentIntervalSec !== intervalSec) { clearInterval(timer); timer = null; }
+  if (cfg.enabled && !timer) {
+    currentIntervalSec = intervalSec;
+    timer = setInterval(sweepOnce, intervalSec * 1000);
+    timer.unref?.();
+    sweepOnce();
+    console.log(`[share-sweep] enabled, every ${intervalSec}s`);
+  } else if (!cfg.enabled && timer) {
+    clearInterval(timer); timer = null; currentIntervalSec = null;
+    console.log('[share-sweep] disabled');
   }
-  console.log(`[share-sweep] enabled, every ${INTERVAL_MS}ms`);
-  sweepOnce();
-  timer = setInterval(sweepOnce, INTERVAL_MS);
-  timer.unref?.();
+}
+
+export function startShareSweep() {
+  applyShareSweepConfig();
 }
 
 export function shareSweepStatus() {
-  return { ...status, intervalMs: INTERVAL_MS };
+  return { ...status };
 }
 
-// Allow a manual trigger from the admin API.
 export async function runShareSweepNow() {
   await sweepOnce();
   return shareSweepStatus();
