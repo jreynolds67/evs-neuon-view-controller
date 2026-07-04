@@ -382,15 +382,7 @@ function connectWs(cardId) {
   if (ws) { try { ws.close(); } catch {} ws = null; }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws?card=${encodeURIComponent(cardId)}`);
-  ws.onopen = () => setLink(true);
-  ws.onclose = () => setLink(false);
-  ws.onerror = () => setLink(false);
   ws.onmessage = () => { /* board pushed an update; lists refresh on next navigation */ };
-}
-function setLink(ok) {
-  const p = $('linkPill');
-  p.textContent = ok ? 'live' : 'offline';
-  p.className = 'pill ' + (ok ? 'ok' : 'bad');
 }
 
 // ---- Fullscreen input-group editor (1080 layout only) ---------------------
