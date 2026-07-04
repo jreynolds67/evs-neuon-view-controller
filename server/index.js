@@ -25,7 +25,19 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
-app.use(express.static(PUBLIC_DIR));
+// No-cache on static assets: these are operator panels that must pick up a redeploy on
+// their next load without any manual cache-clearing. The payloads are tiny, so skipping
+// caching costs nothing meaningful and guarantees fresh code (e.g. the control-reload WS).
+app.use(express.static(PUBLIC_DIR, {
+  etag: false,
+  lastModified: false,
+  cacheControl: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  },
+}));
 
 // --- helpers ---------------------------------------------------------------
 
