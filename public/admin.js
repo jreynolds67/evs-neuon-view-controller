@@ -629,11 +629,25 @@ $('bkSave').addEventListener('click', async () => {
 });
 
 $('bkRun').addEventListener('click', async () => {
-  $('bkState').textContent = 'Backing up… (may take a moment)';
+  $('bkState').textContent = 'Saving & backing up… (may take a moment)';
   try {
+    // Persist the current form selection FIRST, so the run uses exactly what's on screen
+    // (avoids "no target" when the user picked a card but hadn't saved the schedule).
+    const cfgBody = {
+      enabled: $('bkEnabled').checked,
+      cardId: $('bkCard').value,
+      timeHHMM: $('bkTime').value.trim() || '03:00',
+      retentionDays: parseInt($('bkRetention').value, 10) || 30,
+    };
+    if (!cfgBody.cardId) { $('bkState').textContent = 'Pick a board first.'; return; }
+    const put = await fetch('/api/admin/backup', { method: 'PUT', headers: headers(), body: JSON.stringify(cfgBody) });
+    if (!put.ok) throw new Error((await put.json().catch(() => ({}))).error || put.status);
+
     const s = await fetch('/api/admin/backup/run', { method: 'POST', headers: headers() }).then(r => r.json());
     $('bkState').textContent = s.lastError ? `Error: ${s.lastError}` : `Wrote ${(s.lastFiles || []).length} file(s)`;
-    refreshBackup();
+    // Refresh only the file list, not the whole form, so the selection is preserved.
+    const files = await fetch('/api/admin/backup/files', { headers: headers() }).then(r => r.json());
+    renderBackupFiles(files.files || []);
   } catch (e) { $('bkState').textContent = 'Error: ' + e.message; }
 });
 

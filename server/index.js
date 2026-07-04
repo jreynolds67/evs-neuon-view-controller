@@ -102,6 +102,19 @@ async function resolveCardRequest(req, res) {
   return { config, panel, card };
 }
 
+// Container's local time — lets a panel display the clock the container runs on, so the
+// operator can confirm the container timezone is correct. Returns both epoch and a
+// preformatted local string (server-side, honoring the container's TZ).
+app.get('/api/time', (_req, res) => {
+  const now = new Date();
+  res.json({
+    epochMs: now.getTime(),
+    iso: now.toISOString(),
+    local: now.toLocaleString(undefined, { hour12: false }),
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ || 'unknown',
+  });
+});
+
 // Who am I? Resolve the calling panel by its source IP and return its assigned heads.
 // Cards are no longer exposed to the operator — the panel presents a flat, curated head
 // list. Each head carries its source card+uuid (needed for downstream calls), a display

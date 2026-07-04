@@ -552,4 +552,32 @@ async function boot() {
 // Guarded so that if it somehow throws, it can't prevent boot() from running.
 try { connectControlWs(); } catch (e) { console.error('[control] failed to start:', e); }
 
+// Footer clock showing the CONTAINER's time (so the operator can confirm the container
+// timezone). We sync to the server's clock once, derive the offset from this device's
+// clock, then tick locally and re-sync every few minutes so it stays accurate without
+// hammering the endpoint.
+let clockOffsetMs = 0;   // container epoch - local epoch
+let clockTz = '';
+async function syncClock() {
+  try {
+    const t = await fetch('/api/time').then((r) => r.json());
+    clockOffsetMs = t.epochMs - Date.now();
+    clockTz = t.tz || '';
+  } catch { /* keep last offset */ }
+}
+function tickClock() {
+  const el = document.getElementById('footerClock');
+  if (!el) return;
+  const d = new Date(Date.now() + clockOffsetMs);
+  const p = (n) => String(n).padStart(2, '0');
+  const hhmmss = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  el.textContent = clockTz ? `${hhmmss} · ${clockTz}` : hhmmss;
+}
+(async function startClock() {
+  await syncClock();
+  tickClock();
+  setInterval(tickClock, 1000);
+  setInterval(syncClock, 5 * 60 * 1000); // re-sync every 5 min
+})();
+
 boot();

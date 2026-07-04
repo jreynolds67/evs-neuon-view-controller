@@ -39,13 +39,14 @@ export async function runBackupNow() {
   await ensureDir();
   const config = await loadConfig();
   const bcfg = config.backup || {};
-  // Target can be a defined card id OR a raw board IP.
+  // The UI/endpoint stores the chosen board as `cardId`. Accept legacy `target` too.
+  const sel = bcfg.cardId || bcfg.target || '';
   let ip = null, label = null;
-  const card = getCardById(config, bcfg.target);
+  const card = getCardById(config, sel);
   if (card && card.ip) { ip = card.ip; label = card.label || card.id; }
-  else if (bcfg.target && /\d+\.\d+\.\d+\.\d+/.test(bcfg.target)) { ip = bcfg.target; label = bcfg.target; }
+  else if (sel && /\d+\.\d+\.\d+\.\d+/.test(sel)) { ip = sel; label = sel; }
   if (!ip) {
-    status.lastError = 'No valid backup target (card or IP) configured';
+    status.lastError = 'No valid backup target configured';
     return status;
   }
   label = safe(label);
@@ -150,7 +151,7 @@ export function startBackupScheduler() {
     status.nextCheck = Date.now();
     const config = await loadConfig();
     const bcfg = config.backup || {};
-    if (!bcfg.enabled || !bcfg.target || !bcfg.timeHHMM) return;
+    if (!bcfg.enabled || !(bcfg.cardId || bcfg.target) || !bcfg.timeHHMM) return;
     const now = new Date();
     const p = (n) => String(n).padStart(2, '0');
     const hhmm = `${p(now.getHours())}:${p(now.getMinutes())}`;
