@@ -86,10 +86,11 @@ export async function runBackupNow() {
       return status;
     }
 
-    // Attempt 1: whole board as a single file, passing every UUID explicitly.
+    // Attempt 1: whole board as a single file, by explicit UUID list (no wildcard —
+    // the board rejects sending both).
     let ok = false;
     try {
-      const buf = await exportSnapshots(ip, { pathWildcard: '*', snapshots: allUuids });
+      const buf = await exportSnapshots(ip, { snapshots: allUuids });
       if (buf && buf.length && !looksLikeJson(buf)) {
         const file = `${date}__${label}__all${extFromDisposition(buf)}`;
         await writeAtomic(join(BACKUP_DIR, file), buf);
@@ -103,14 +104,14 @@ export async function runBackupNow() {
       // fall through to per-folder
     }
 
-    // Attempt 2 (fallback): per-folder exports, each scoped by path with its UUIDs.
+    // Attempt 2 (fallback): per-folder exports, each by that folder's explicit UUID list.
     if (!ok) {
       const folders = [...new Set(entries.map((e) => e.path || ''))];
       for (const folder of folders) {
-        const wildcard = folder ? `${folder}*` : '*';
         const uuids = entries.filter((e) => (e.path || '') === folder).map((e) => e.uuid);
+        if (!uuids.length) continue;
         try {
-          const buf = await exportSnapshots(ip, { pathWildcard: wildcard, snapshots: uuids });
+          const buf = await exportSnapshots(ip, { snapshots: uuids });
           if (buf && buf.length && !looksLikeJson(buf)) {
             const file = `${date}__${label}__${safe(folder || 'root')}${extFromDisposition(buf)}`;
             await writeAtomic(join(BACKUP_DIR, file), buf);

@@ -178,13 +178,22 @@ export async function setSnapshotShared(ip, snap, shared = true) {
   });
 }
 
-// Export snapshots as a single binary file. `pathWildcard` scopes by folder path (e.g.
-// "*" for everything, "Layout Presets*" for a folder); `snapshots` optionally narrows to
-// specific UUIDs. Returns a Buffer (the export file bytes).
-export async function exportSnapshots(ip, { pathWildcard = '*', snapshots = [] } = {}) {
+// Export snapshots as a single binary file. The board requires EXACTLY ONE selector —
+// providing both pathWildcard and snapshots is rejected (400). Pass a non-empty
+// `snapshots` array to export those specific UUIDs, OR a `pathWildcard` to export by
+// folder path. If snapshots is non-empty it wins and pathWildcard is omitted.
+export async function exportSnapshots(ip, { pathWildcard, snapshots } = {}) {
+  let payload;
+  if (Array.isArray(snapshots) && snapshots.length) {
+    payload = { snapshots };
+  } else if (pathWildcard) {
+    payload = { pathWildcard };
+  } else {
+    payload = { pathWildcard: '*' }; // default: whole board by wildcard
+  }
   return boardFetch(ip, '/snapshots/export', {
     method: 'POST',
-    body: JSON.stringify({ pathWildcard, snapshots }),
+    body: JSON.stringify(payload),
     raw: true,
   });
 }
