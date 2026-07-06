@@ -103,16 +103,16 @@ async function resolveCardRequest(req, res) {
   return { config, panel, card };
 }
 
-// Container's local time — lets a panel display the clock the container runs on, so the
-// operator can confirm the container timezone is correct. Returns both epoch and a
-// preformatted local string (server-side, honoring the container's TZ).
+// Container's local time — lets the admin confirm the container's timezone. Returns the
+// epoch plus the container's IANA timezone so the client renders the wall clock the
+// container actually runs on (not the browser's local time).
 app.get('/api/time', (_req, res) => {
   const now = new Date();
+  const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   res.json({
     epochMs: now.getTime(),
     iso: now.toISOString(),
-    local: now.toLocaleString(undefined, { hour12: false }),
-    tz: Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ || 'unknown',
+    tz,
   });
 });
 
@@ -135,11 +135,9 @@ app.get('/api/panel/me', async (req, res) => {
       cardId: h.cardId,
       headUuid: h.headUuid,
       label: h.label || h.boardName || 'Head',
-      pos: h.pos || null,
     }));
   res.json({
     ip, label: panel.label, layout: panel.layout || '1080', heads,
-    grid: panel.grid || null,
     showUuids: config.settings?.showUuids !== false,
   });
 });

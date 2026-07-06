@@ -76,16 +76,6 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: 0.01em; }
   display: grid; gap: 12px;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
 }
-/* Explicit grid: 1fr rows and columns share the stage equally, so empty rows/columns
-   still reserve space and heads keep their physical position. Cards fill their cell; the
-   preview scales within it, keeping 16:9 without cropping. */
-.grid.head-grid-custom { height: 100%; }
-.grid.head-grid-custom .card {
-  min-height: 0; height: 100%; align-self: stretch;
-  display: flex; flex-direction: column; overflow: hidden;
-}
-.grid.head-grid-custom .card-preview { flex: 1 1 auto; min-height: 0; aspect-ratio: auto; }
-.grid.head-grid-custom .card-body { flex: 0 0 auto; }
 .card {
   min-height: var(--touch);
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);

@@ -184,8 +184,8 @@ async function writeAtomic(path, buf) {
   await rename(tmp, path);
 }
 
-// A backup file is recognised by its date-prefix name (YYYY-MM-DD__...), regardless of
-// extension — the board may hand back various file types (or none).
+// A backup file is recognised by its date-prefix name (YYYY-MM-DD, optionally with a
+// _HH-MM-SS time), regardless of extension — the board may hand back various file types.
 const BACKUP_RE = /^\d{4}-\d{2}-\d{2}(_\d{2}-\d{2}-\d{2})?__.+/;
 function isBackupFile(f) { return BACKUP_RE.test(f) && !f.endsWith('.tmp'); }
 

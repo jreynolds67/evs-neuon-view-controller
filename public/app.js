@@ -182,23 +182,6 @@ async function renderHeads() {
   const heads = state.panel.heads || [];
   if (!heads.length) return showEmpty('No heads assigned to this panel. Configure it in the admin page.');
 
-  // If the panel defines a grid, lay heads out on it to mirror the physical monitor
-  // arrangement; otherwise fall back to the default flow grid.
-  const g = state.panel.grid;
-  const useGrid = g && g.rows > 0 && g.cols > 0;
-  if (useGrid) {
-    grid.classList.add('head-grid-custom');
-    // 1fr tracks: every row and column gets an equal share of the stage — including empty
-    // ones — so heads hold their physical position without fixed pixel sizes that overflow
-    // the short strip layout. Cells size to the available space and keep 16:9 previews.
-    grid.style.gridTemplateColumns = `repeat(${g.cols}, 1fr)`;
-    grid.style.gridTemplateRows = `repeat(${g.rows}, 1fr)`;
-  } else {
-    grid.classList.remove('head-grid-custom');
-    grid.style.gridTemplateColumns = '';
-    grid.style.gridTemplateRows = '';
-  }
-
   heads.forEach((h) => {
     const card = document.createElement('button');
     card.className = 'card card-with-preview';
@@ -213,12 +196,6 @@ async function renderHeads() {
     if (state.showUuids) card.querySelector('.uuid').textContent = h.headUuid;
     else card.querySelector('.uuid').remove();
     card.addEventListener('click', () => { state.head = h; connectWs(h.cardId); renderSnapshots(); });
-
-    // Position on the custom grid if this head has a placement.
-    if (useGrid && h.pos && h.pos.r > 0 && h.pos.c > 0) {
-      card.style.gridColumn = `${h.pos.c} / span ${h.pos.colSpan || 1}`;
-      card.style.gridRow = `${h.pos.r} / span ${h.pos.rowSpan || 1}`;
-    }
 
     // Fullscreen input-group editor is 1920x1080 only — not on the strip.
     const expand = card.querySelector('.expand-btn');
