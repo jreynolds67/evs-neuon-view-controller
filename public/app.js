@@ -195,7 +195,9 @@ async function renderHeads() {
     const colW = 310;
     const footer = 44;                       // name bar height
     const rowH = Math.round(colW * 9 / 16) + footer;
-    grid.style.gridTemplateColumns = `repeat(${g.cols}, ${colW}px)`;
+    // Columns capped (not stretched): minmax(0, colW) holds the cap while justify-content
+    // leaves dead space on the right. Rows are FIXED so empty rows reserve full height.
+    grid.style.gridTemplateColumns = `repeat(${g.cols}, minmax(0, ${colW}px))`;
     grid.style.gridTemplateRows = `repeat(${g.rows}, ${rowH}px)`;
   } else {
     grid.classList.remove('head-grid-custom');
