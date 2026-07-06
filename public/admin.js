@@ -120,7 +120,10 @@ function renderPanels() {
             <option value="1080"${p.layout === '1080' ? ' selected' : ''}>1920 × 1080</option>
             <option value="strip"${p.layout === 'strip' ? ' selected' : ''}>1835 × 291 (CTP)</option>
           </select></div>
-        <div style="align-self:flex-end"><button class="btn sm del" data-delpanel="${pi}">Remove</button></div>
+        <div style="align-self:flex-end" class="inline">
+          <button class="btn sm ghost" data-duppanel="${pi}">Duplicate</button>
+          <button class="btn sm del" data-delpanel="${pi}">Remove</button>
+        </div>
       </div>
       <div style="margin-top:14px">
         <label class="muted">Heads on this panel (in display order)</label>
@@ -153,6 +156,7 @@ function renderPanels() {
     box.querySelector('[data-delpanel]').addEventListener('click', () => {
       config.panels.splice(pi, 1); renderPanels();
     });
+    box.querySelector('[data-duppanel]').addEventListener('click', () => duplicatePanel(pi));
     box.querySelector(`[data-addhead="${pi}"]`).addEventListener('click', () => openHeadPicker(pi));
     box.querySelector(`[data-addallheads="${pi}"]`).addEventListener('click', () => addAllHeads(pi));
 
@@ -470,6 +474,21 @@ $('addPanel').addEventListener('click', () => {
   config.panels.push({ ip: '', label: '', layout: '1080', heads: [] });
   renderPanels();
 });
+
+// Duplicate a panel: deep-copy everything (heads, layout grid, filters, all settings)
+// EXCEPT the IP — each panel is keyed by its unique IP, so the copy starts blank for you
+// to fill in. The label gets a " (copy)" suffix. Inserted right after the original.
+function duplicatePanel(pi) {
+  const src = config.panels[pi];
+  const copy = JSON.parse(JSON.stringify(src)); // deep clone, safe for plain config data
+  copy.ip = '';                                  // must be unique — clear for the new panel
+  copy.label = (src.label ? `${src.label} (copy)` : 'Panel (copy)');
+  config.panels.splice(pi + 1, 0, copy);         // insert directly after the original
+  renderPanels();
+  // Nudge the user toward the field that needs attention.
+  const state = $(`addHeadState-${pi + 1}`);
+  if (state) state.textContent = 'Duplicated — set this panel’s IP, then Save config.';
+}
 
 // Re-poll every board referenced by any panel head, and update cached board names across
 // all panels (matched by UUID, which never changes on rename). Heads whose UUID is no

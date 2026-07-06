@@ -158,6 +158,9 @@ body.strip .footer-clock { font-size: 12px; }
   min-height: 60px; padding: 0 26px; border-radius: var(--radius);
   border: 1px solid var(--line); background: var(--panel-2); color: var(--ink);
   font-size: 17px; font-weight: 600; cursor: pointer;
+  /* Center content and box the same whether this is a <button> or a styled <a>. */
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; text-decoration: none; line-height: 1; white-space: nowrap;
 }
 .btn:active { transform: scale(0.98); }
 .btn.ghost { background: transparent; }
