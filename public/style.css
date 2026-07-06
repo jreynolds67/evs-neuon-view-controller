@@ -76,6 +76,10 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: 0.01em; }
   display: grid; gap: 12px;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
 }
+/* When a panel defines an explicit grid, fill the stage height so the arrangement mirrors
+   the physical monitor wall rather than flowing top-down. */
+.grid.head-grid-custom { height: 100%; grid-auto-rows: 1fr; }
+.grid.head-grid-custom .card { min-height: 0; }
 .card {
   min-height: var(--touch);
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);

@@ -33,6 +33,13 @@ function todayStamp() {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
+// Filename stamp includes time so multiple backups in a day are distinct and sortable:
+// YYYY-MM-DD_HH-MM-SS
+function fileStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
 
 // Perform one backup of the configured card. Tries a single whole-board export first;
 // if that fails, falls back to one file per distinct folder path found on the board.
@@ -51,7 +58,7 @@ export async function runBackupNow() {
     return status;
   }
   label = safe(label);
-  const date = todayStamp();
+  const date = fileStamp();
   const written = [];
 
   // Detect an export response that's actually JSON (error/manifest) rather than a real
@@ -179,7 +186,7 @@ async function writeAtomic(path, buf) {
 
 // A backup file is recognised by its date-prefix name (YYYY-MM-DD__...), regardless of
 // extension — the board may hand back various file types (or none).
-const BACKUP_RE = /^\d{4}-\d{2}-\d{2}__.+/;
+const BACKUP_RE = /^\d{4}-\d{2}-\d{2}(_\d{2}-\d{2}-\d{2})?__.+/;
 function isBackupFile(f) { return BACKUP_RE.test(f) && !f.endsWith('.tmp'); }
 
 // Delete backups older than retentionDays (by file mtime).

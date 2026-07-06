@@ -135,9 +135,11 @@ app.get('/api/panel/me', async (req, res) => {
       cardId: h.cardId,
       headUuid: h.headUuid,
       label: h.label || h.boardName || 'Head',
+      pos: h.pos || null,
     }));
   res.json({
     ip, label: panel.label, layout: panel.layout || '1080', heads,
+    grid: panel.grid || null,
     showUuids: config.settings?.showUuids !== false,
   });
 });

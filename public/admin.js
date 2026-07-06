@@ -127,9 +127,20 @@ function renderPanels() {
         <div id="headList-${pi}" style="margin-top:6px"></div>
         <div class="inline" style="margin-top:8px">
           <button class="btn sm" data-addhead="${pi}">Add head</button>
+          <button class="btn sm ghost" data-addallheads="${pi}">Add all heads</button>
           <span class="muted" id="addHeadState-${pi}"></span>
         </div>
         <div id="headPicker-${pi}"></div>
+      </div>
+      <div style="margin-top:16px">
+        <label class="muted">Physical layout (drag heads onto the grid to match the monitor wall)</label>
+        <div class="inline" style="gap:10px; margin:6px 0">
+          <label class="muted">Rows</label><input type="number" min="1" max="12" id="gridRows-${pi}" style="width:70px">
+          <label class="muted">Columns</label><input type="number" min="1" max="12" id="gridCols-${pi}" style="width:70px">
+          <button class="btn sm ghost" data-applygrid="${pi}">Apply grid</button>
+          <button class="btn sm ghost" data-clearlayout="${pi}">Clear positions</button>
+        </div>
+        <div id="layoutCanvas-${pi}" class="layout-canvas"></div>
       </div>`;
     host.appendChild(box);
 
@@ -140,6 +151,27 @@ function renderPanels() {
       config.panels.splice(pi, 1); renderPanels();
     });
     box.querySelector(`[data-addhead="${pi}"]`).addEventListener('click', () => openHeadPicker(pi));
+    box.querySelector(`[data-addallheads="${pi}"]`).addEventListener('click', () => addAllHeads(pi));
+
+    // Layout grid controls
+    const p0 = config.panels[pi];
+    p0.grid ||= { rows: 2, cols: 2 };
+    $(`gridRows-${pi}`).value = p0.grid.rows;
+    $(`gridCols-${pi}`).value = p0.grid.cols;
+    box.querySelector(`[data-applygrid="${pi}"]`).addEventListener('click', () => {
+      const rows = Math.max(1, Math.min(12, parseInt($(`gridRows-${pi}`).value, 10) || 1));
+      const cols = Math.max(1, Math.min(12, parseInt($(`gridCols-${pi}`).value, 10) || 1));
+      config.panels[pi].grid = { rows, cols };
+      // Drop positions that no longer fit the new grid.
+      (config.panels[pi].heads || []).forEach((h) => {
+        if (h.pos && (h.pos.r > rows || h.pos.c > cols)) delete h.pos;
+      });
+      renderLayoutCanvas(pi);
+    });
+    box.querySelector(`[data-clearlayout="${pi}"]`).addEventListener('click', () => {
+      (config.panels[pi].heads || []).forEach((h) => delete h.pos);
+      renderLayoutCanvas(pi);
+    });
 
     renderHeadList(pi);
   });
@@ -190,6 +222,90 @@ function renderHeadList(pi) {
     });
     host.appendChild(row);
   });
+  if (document.getElementById(`layoutCanvas-${pi}`)) renderLayoutCanvas(pi);
+}
+
+// Visual drag canvas: draws the panel's grid and lets you drag each head tile onto a
+// cell. Unplaced heads sit in a tray beneath and can be dragged in. Placement is stored
+// as head.pos = { r, c, rowSpan:1, colSpan:1 }.
+function renderLayoutCanvas(pi) {
+  const p = config.panels[pi];
+  const host = document.getElementById(`layoutCanvas-${pi}`);
+  if (!host) return;
+  const g = p.grid || { rows: 2, cols: 2 };
+  host.innerHTML = '';
+
+  // Grid of drop cells.
+  const gridEl = document.createElement('div');
+  gridEl.className = 'lc-grid';
+  gridEl.style.gridTemplateColumns = `repeat(${g.cols}, 1fr)`;
+  gridEl.style.gridTemplateRows = `repeat(${g.rows}, 48px)`;
+
+  const placedAt = new Map(); // "r,c" -> head
+  (p.heads || []).forEach((h) => { if (h.pos) placedAt.set(`${h.pos.r},${h.pos.c}`, h); });
+
+  for (let r = 1; r <= g.rows; r++) {
+    for (let c = 1; c <= g.cols; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'lc-cell';
+      cell.dataset.r = r; cell.dataset.c = c;
+      const occupant = placedAt.get(`${r},${c}`);
+      if (occupant) {
+        cell.classList.add('filled');
+        cell.textContent = occupant.label || occupant.boardName || 'Head';
+        cell.draggable = true;
+        cell.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('text/plain', occupant.headUuid + '|' + occupant.cardId);
+        });
+        // Click to unplace.
+        cell.title = 'Drag to move · double-click to remove from grid';
+        cell.addEventListener('dblclick', () => { delete occupant.pos; renderLayoutCanvas(pi); });
+      }
+      cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.classList.add('over'); });
+      cell.addEventListener('dragleave', () => cell.classList.remove('over'));
+      cell.addEventListener('drop', (e) => {
+        e.preventDefault(); cell.classList.remove('over');
+        const [uuid, cardId] = (e.dataTransfer.getData('text/plain') || '').split('|');
+        const head = (p.heads || []).find((h) => h.headUuid === uuid && h.cardId === cardId);
+        if (!head) return;
+        // If target cell is occupied by another head, swap positions.
+        const target = placedAt.get(`${r},${c}`);
+        if (target && target !== head) {
+          const from = head.pos ? { ...head.pos } : null;
+          target.pos = from || null;
+          if (!from) delete target.pos;
+        }
+        head.pos = { r, c, rowSpan: 1, colSpan: 1 };
+        renderLayoutCanvas(pi);
+      });
+      gridEl.appendChild(cell);
+    }
+  }
+  host.appendChild(gridEl);
+
+  // Tray of unplaced heads.
+  const unplaced = (p.heads || []).filter((h) => !h.pos);
+  const tray = document.createElement('div');
+  tray.className = 'lc-tray';
+  if (unplaced.length) {
+    const lbl = document.createElement('div');
+    lbl.className = 'muted'; lbl.style.fontSize = '12px'; lbl.textContent = 'Unplaced heads — drag onto the grid:';
+    tray.appendChild(lbl);
+    const chips = document.createElement('div'); chips.className = 'lc-chips';
+    unplaced.forEach((h) => {
+      const chip = document.createElement('div');
+      chip.className = 'lc-chip'; chip.draggable = true;
+      chip.textContent = h.label || h.boardName || 'Head';
+      chip.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', h.headUuid + '|' + h.cardId);
+      });
+      chips.appendChild(chip);
+    });
+    tray.appendChild(chips);
+  } else {
+    tray.innerHTML = '<div class="muted" style="font-size:12px">All heads placed. Double-click a tile to remove it from the grid.</div>';
+  }
+  host.appendChild(tray);
 }
 
 // Head picker: choose a card, then one of its heads to assign to the panel.
@@ -250,6 +366,39 @@ async function openHeadPicker(pi) {
   });
 
   picker.querySelector('.hp-cancel').addEventListener('click', () => { host.innerHTML = ''; });
+}
+
+// Add every validly-named head from ALL cards to this panel in one go — for quickly
+// standing up an engineering panel. Heads with no name (or whose name is just the UUID)
+// are skipped, as are heads already assigned to this panel.
+async function addAllHeads(pi) {
+  const p = config.panels[pi];
+  const stateEl = $(`addHeadState-${pi}`);
+  stateEl.textContent = 'Loading heads from all cards…';
+  const cards = config.cards.filter((c) => c.id);
+  if (!cards.length) { stateEl.textContent = 'No cards defined.'; return; }
+
+  let added = 0, skipped = 0, failed = [];
+  for (const card of cards) {
+    let heads;
+    try { heads = await probeCardHeads(card.id); }
+    catch { failed.push(card.label || card.id); continue; }
+
+    const taken = new Set(p.heads.filter((h) => h.cardId === card.id).map((h) => h.headUuid));
+    for (const h of heads.slice().sort(byName)) {
+      const name = (h.name || '').trim();
+      const validName = name && name !== h.uuid; // skip nameless / UUID-only heads
+      if (!validName) { skipped++; continue; }
+      if (taken.has(h.uuid)) continue; // already on this panel
+      p.heads.push({ cardId: card.id, headUuid: h.uuid, boardName: name, label: '', order: p.heads.length });
+      added++;
+    }
+  }
+  renderHeadList(pi);
+  stateEl.textContent = `Added ${added} head${added === 1 ? '' : 's'}`
+    + (skipped ? `, skipped ${skipped} unnamed` : '')
+    + (failed.length ? `, ${failed.length} card(s) unreachable` : '')
+    + '. Save config to keep.';
 }
 
 $('addPanel').addEventListener('click', () => {
@@ -670,13 +819,13 @@ loadConfig();
 refreshLog(true);
 startLogAuto();
 
-// Container clock in the admin header — lets you confirm the container's timezone.
-let clockOffsetMs = 0, clockTz = '';
+// Container clock in the admin header. Uses the container's actual system time (correct
+// wall-clock); no timezone label since Node's reported TZ is unreliable without TZ set.
+let clockOffsetMs = 0;
 async function syncClock() {
   try {
     const t = await fetch('/api/time').then((r) => r.json());
     clockOffsetMs = t.epochMs - Date.now();
-    clockTz = t.tz || '';
   } catch {}
 }
 function tickClock() {
@@ -684,7 +833,7 @@ function tickClock() {
   if (!el) return;
   const d = new Date(Date.now() + clockOffsetMs);
   const p = (n) => String(n).padStart(2, '0');
-  el.textContent = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}` + (clockTz ? ` · ${clockTz}` : '');
+  el.textContent = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 tickClock();
 setInterval(tickClock, 1000);
