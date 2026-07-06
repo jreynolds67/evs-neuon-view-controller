@@ -76,9 +76,10 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: 0.01em; }
   display: grid; gap: 12px;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
 }
-/* When a panel defines an explicit grid, fill the stage height so the arrangement mirrors
-   the physical monitor wall rather than flowing top-down. */
-.grid.head-grid-custom { height: 100%; grid-auto-rows: 1fr; }
+/* When a panel defines an explicit grid, cells are size-capped (set inline) and the grid
+   is aligned to the top-left; any extra space is left empty on the right/bottom rather
+   than stretching the tiles. */
+.grid.head-grid-custom { height: 100%; justify-content: start; align-content: start; }
 .grid.head-grid-custom .card { min-height: 0; }
 .card {
   min-height: var(--touch);

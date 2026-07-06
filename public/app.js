@@ -188,8 +188,10 @@ async function renderHeads() {
   const useGrid = g && g.rows > 0 && g.cols > 0;
   if (useGrid) {
     grid.classList.add('head-grid-custom');
-    grid.style.gridTemplateColumns = `repeat(${g.cols}, 1fr)`;
-    grid.style.gridTemplateRows = `repeat(${g.rows}, 1fr)`;
+    // Cap column and row size so cells stay a sensible size instead of stretching to fill
+    // the whole stage; leftover space is left empty (grid is start-aligned in CSS).
+    grid.style.gridTemplateColumns = `repeat(${g.cols}, minmax(0, 380px))`;
+    grid.style.gridTemplateRows = `repeat(${g.rows}, minmax(0, 300px))`;
   } else {
     grid.classList.remove('head-grid-custom');
     grid.style.gridTemplateColumns = '';
