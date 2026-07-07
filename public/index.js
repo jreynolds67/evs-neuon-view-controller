@@ -151,8 +151,8 @@ app.get('/api/panel/me', async (req, res) => {
   res.json({
     ip, label: panel.label, layout: panel.layout || '1080', cols,
     grid,
-    allowShowAll: panel.allowShowAll === true,
     showUuids: config.settings?.showUuids !== false,
+    allowShowAll: panel.allowShowAll === true,
   });
 });
 
@@ -160,15 +160,11 @@ app.get('/api/panel/me', async (req, res) => {
 app.get('/api/panel/cards/:cardId/heads/:headUuid/snapshots', async (req, res) => {
   const r = await resolveHeadRequest(req, res);
   if (!r) return;
-  const { config, card, panelHead, panel } = r;
+  const { config, card, panelHead } = r;
 
   try {
     const info = await getSnapshotInfo(card.ip);
-    let allow = resolveAllowedSnapshots(config, panelHead, req.params.cardId, req.params.headUuid);
-    // Temporary "Show all" override: only honored if this panel is configured to allow it.
-    // Server-side gate so the filter can't be bypassed by a panel that isn't permitted.
-    const wantsShowAll = req.query.showAll === '1';
-    if (wantsShowAll && panel && panel.allowShowAll === true) allow = null;
+    const allow = resolveAllowedSnapshots(config, panelHead, req.params.cardId, req.params.headUuid);
     const includeDeleted = req.query.includeDeleted === '1';
 
     // Normalise entries (string UUIDs or richer objects) to a consistent shape.
