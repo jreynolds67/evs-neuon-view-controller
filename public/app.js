@@ -9,6 +9,7 @@ const state = {
   snap: null,     // { uuid, name, ... }
   srcHead: null,  // snapshot source head { uuid, name }
   showUuids: true,
+  showAllActive: false, // temporary "Show all" override on the snapshot step
 };
 
 const $ = (id) => document.getElementById(id);
@@ -176,6 +177,7 @@ function showEmpty(msg) {
 async function renderHeads() {
   state.step = 'head'; setSteps();
   state.head = null; state.snap = null; state.srcHead = null;
+  state.showAllActive = false; // heads view always starts from the filtered state
   $('stageTitle').textContent = 'Select a head';
   $('stageHint').textContent = '';
   grid.innerHTML = '';
@@ -220,7 +222,7 @@ async function renderHeads() {
     card.querySelector('.k').textContent = h.label || 'Head';
     if (state.showUuids) card.querySelector('.uuid').textContent = h.headUuid;
     else card.querySelector('.uuid').remove();
-    card.addEventListener('click', () => { state.head = h; connectWs(h.cardId); renderSnapshots(); });
+    card.addEventListener('click', () => { state.head = h; state.showAllActive = false; connectWs(h.cardId); renderSnapshots(); });
 
     // Fullscreen input-group editor is 1920x1080 only — not on the strip.
     const expand = card.querySelector('.expand-btn');
@@ -247,13 +249,34 @@ async function renderSnapshots() {
   $('stageHint').textContent = state.head.label;
   showEmpty('Loading snapshots…');
   try {
+    const qs = state.showAllActive ? '?showAll=1' : '';
     const { snapshots, state: boardState } = await api(
-      `/api/panel/cards/${state.head.cardId}/heads/${state.head.headUuid}/snapshots`);
+      `/api/panel/cards/${state.head.cardId}/heads/${state.head.headUuid}/snapshots${qs}`);
     grid.innerHTML = '';
     if (boardState && boardState !== 'idle') {
       toast(`Board is busy: ${boardState}`, 'err');
     }
-    if (!snapshots.length) return showEmpty('No snapshots available for this head.');
+
+    // "Show all" control — only when the panel permits it. Temporarily reveals every
+    // snapshot for this head; reverts automatically on any navigation away from this list.
+    if (state.panel.allowShowAll) {
+      const bar = document.createElement('div');
+      bar.className = 'showall-bar';
+      const btn = document.createElement('button');
+      btn.className = 'btn sm ghost showall-btn' + (state.showAllActive ? ' on' : '');
+      btn.textContent = state.showAllActive ? 'Showing all — tap to filter' : 'Show all snapshots';
+      btn.addEventListener('click', () => { state.showAllActive = !state.showAllActive; renderSnapshots(); });
+      bar.appendChild(btn);
+      grid.appendChild(bar);
+    }
+
+    if (!snapshots.length) {
+      const note = document.createElement('div');
+      note.className = 'empty-note';
+      note.textContent = 'No snapshots available for this head.';
+      grid.appendChild(note);
+      return;
+    }
 
     // Group by folder (path). Blank path = "Ungrouped", shown last.
     const groups = new Map();
@@ -286,6 +309,7 @@ async function renderSnapshots() {
 async function pickSnapshot(s) {
   state.snap = s;
   state.srcHead = null;
+  state.showAllActive = false; // clicking into a snapshot reverts the temporary override
   try {
     const { heads, parsed } = await api(
       `/api/panel/cards/${state.head.cardId}/snapshots/${s.uuid}/heads`);
@@ -376,9 +400,9 @@ async function fire() {
     });
     $('overlay').classList.remove('show');
     toast(`Loaded "${state.snap.name}" onto ${state.head.label}`, 'ok');
-    // Return to the snapshot list for the same head so repeat recalls are quick.
-    state.srcHead = null;
-    renderSnapshots();
+    // Return to the heads view after a successful load.
+    state.head = state.snap = state.srcHead = null;
+    renderHeads();
   } catch (e) {
     toast(e.message, 'err');
   } finally {
@@ -389,6 +413,7 @@ async function fire() {
 // ---- Navigation -----------------------------------------------------------
 
 function back() {
+  state.showAllActive = false; // any back-navigation reverts the temporary override
   if (state.step === 'snap') return renderHeads();
   if (state.step === 'source') return renderSnapshots();
   if (state.step === 'confirm') return closeConfirm();
@@ -396,6 +421,7 @@ function back() {
 
 function restart() {
   state.head = state.snap = state.srcHead = null;
+  state.showAllActive = false;
   renderHeads();
 }
 
@@ -563,8 +589,7 @@ async function boot() {
     state.showUuids = state.panel.showUuids !== false;
     document.body.classList.toggle('strip', state.panel.layout === 'strip');
     $('panelLabel').textContent = state.panel.label || 'Neuron MV Control';
-    const n = (state.panel.heads || []).length;
-    $('panelSub').textContent = `${state.panel.ip} · ${n} head${n === 1 ? '' : 's'}`;
+    $('panelSub').textContent = state.panel.ip;
     renderHeads();
   } catch (e) {
     $('panelSub').textContent = 'This panel is not registered.';

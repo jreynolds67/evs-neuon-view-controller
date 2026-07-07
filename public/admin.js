@@ -169,6 +169,12 @@ function renderPanelDetail(pi) {
       </div>
     </div>
     <div style="margin-top:14px">
+      <label class="inline" style="cursor:pointer; gap:8px">
+        <input type="checkbox" data-pi="${pi}" data-f="allowShowAll" ${p.allowShowAll ? 'checked' : ''} style="width:18px;height:18px">
+        <span>Allow operators to temporarily “Show all snapshots” on this panel</span>
+      </label>
+    </div>
+    <div style="margin-top:14px">
       <label class="muted">Heads on this panel (in display order)</label>
       <div id="headList-${pi}" style="margin-top:6px"></div>
       <div class="inline" style="margin-top:8px">
@@ -187,13 +193,14 @@ function renderPanelDetail(pi) {
   box.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('input', (e) => {
     const field = e.target.dataset.f;
     const prev = config.panels[pi][field];
-    config.panels[pi][field] = e.target.value;
+    const val = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    config.panels[pi][field] = val;
     // The label/IP in the left list should update live as you type.
     if (field === 'label' || field === 'ip') refreshPanelListLabels();
     // Changing the layout type changes the fixed column count (7 ↔ 8). The old grid was
     // laid out for the previous width, so its rows no longer line up — clear it so the
     // arrangement is rebuilt for the new shape, and re-render the editor.
-    if (field === 'layout' && e.target.value !== prev) {
+    if (field === 'layout' && val !== prev) {
       config.panels[pi].layoutGrid = [];
       renderLayoutEditor(pi);
     }
