@@ -170,16 +170,19 @@ function renderPanelListInto(listCol) {
     const head = document.createElement('div');
     head.className = 'panel-group-head' + (collapsed ? ' collapsed' : '');
     head.dataset.group = group;
+    // Named group headers can be dragged to reorder groups. The "Ungrouped" section is
+    // pinned to the bottom and isn't draggable.
+    head.draggable = !isUngrouped;
     // Ungrouped header has a caret + label + count, but no rename/delete controls.
     const controls = isUngrouped ? '' :
-      `<button class="pgh-btn" data-rename title="Rename group">✎</button>
-       <button class="pgh-btn" data-delgroup title="Delete group (keeps panels)">✕</button>`;
+      `<button class="pgh-btn" data-rename title="Rename group" draggable="false">✎</button>
+       <button class="pgh-btn" data-delgroup title="Delete group (keeps panels)" draggable="false">✕</button>`;
     head.innerHTML = `<span class="pgh-caret">${collapsed ? '▸' : '▾'}</span>
       <span class="pgh-name"></span>
       <span class="pgh-count muted">${panelsIn.length}</span>
       ${controls}`;
     head.querySelector('.pgh-name').textContent = isUngrouped ? 'Ungrouped' : group;
-    // Clicking the header (not its buttons) toggles collapse.
+    // Clicking the header (not its buttons) toggles collapse. A real drag suppresses click.
     head.addEventListener('click', () => {
       if (collapsed) collapsedGroups.delete(group); else collapsedGroups.add(group);
       renderPanels();
@@ -187,16 +190,49 @@ function renderPanelListInto(listCol) {
     if (!isUngrouped) {
       head.querySelector('[data-rename]').addEventListener('click', (e) => { e.stopPropagation(); renameGroup(group); });
       head.querySelector('[data-delgroup]').addEventListener('click', (e) => { e.stopPropagation(); deleteGroup(group); });
+      // Group reordering: emit a group payload on drag.
+      head.addEventListener('dragstart', (e) => {
+        e.stopPropagation();
+        e.dataTransfer.setData('text/plain', JSON.stringify({ kind: 'group', name: group }));
+        e.dataTransfer.effectAllowed = 'move';
+        currentDragKind = 'group';
+        head.classList.add('dragging');
+      });
+      head.addEventListener('dragend', () => {
+        currentDragKind = null;
+        head.classList.remove('dragging');
+        document.querySelectorAll('.panel-group-head.drop-before,.panel-group-head.drop-after')
+          .forEach((el) => el.classList.remove('drop-before', 'drop-after'));
+      });
     }
-    // Dropping a panel onto the header moves it into this group (appended at the end). If
-    // the group is collapsed, dropping onto it also expands it so you can see the result.
-    head.addEventListener('dragover', (e) => { e.preventDefault(); head.classList.add('over'); });
-    head.addEventListener('dragleave', () => head.classList.remove('over'));
+    // The header accepts BOTH a panel drop (move panel into this group) and a group drop
+    // (reorder groups). Which one is decided from the drag payload's `kind`.
+    head.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      const kind = dragKind(e);
+      if (kind === 'group' && !isUngrouped) {
+        const before = isBeforeMidpoint(e, head);
+        head.classList.toggle('drop-before', before);
+        head.classList.toggle('drop-after', !before);
+      } else {
+        head.classList.add('over');
+      }
+    });
+    head.addEventListener('dragleave', () => head.classList.remove('over', 'drop-before', 'drop-after'));
     head.addEventListener('drop', (e) => {
-      e.preventDefault(); head.classList.remove('over');
-      const pi = dragPanelIndex(e); if (pi == null) return;
-      collapsedGroups.delete(group);
-      movePanelToGroup(pi, group, null);
+      e.preventDefault();
+      head.classList.remove('over', 'drop-before', 'drop-after');
+      const kind = dragKind(e);
+      if (kind === 'group') {
+        if (isUngrouped) return; // can't reorder relative to the pinned Ungrouped section
+        const from = dragGroupName(e); if (from == null) return;
+        const before = isBeforeMidpoint(e, head);
+        reorderGroup(from, group, before);
+      } else {
+        const pi = dragPanelIndex(e); if (pi == null) return;
+        collapsedGroups.delete(group);
+        movePanelToGroup(pi, group, null);
+      }
     });
     listCol.appendChild(head);
 
@@ -229,14 +265,17 @@ function buildPanelListItem(p, pi) {
   item.addEventListener('dragstart', (e) => {
     e.dataTransfer.setData('text/plain', JSON.stringify({ kind: 'panel', pi }));
     e.dataTransfer.effectAllowed = 'move';
+    currentDragKind = 'panel';
     item.classList.add('dragging');
   });
   item.addEventListener('dragend', () => {
+    currentDragKind = null;
     item.classList.remove('dragging');
     document.querySelectorAll('.panel-list-item.drop-before,.panel-list-item.drop-after')
       .forEach((el) => el.classList.remove('drop-before', 'drop-after'));
   });
   item.addEventListener('dragover', (e) => {
+    if (currentDragKind === 'group') return; // groups don't drop onto individual panels
     e.preventDefault();
     const before = isBeforeMidpoint(e, item);
     item.classList.toggle('drop-before', before);
@@ -255,6 +294,11 @@ function buildPanelListItem(p, pi) {
   return item;
 }
 
+// The kind of the in-flight drag ('panel' | 'group' | null). Tracked in a module var
+// because dataTransfer.getData() is only readable on `drop`, not during `dragover` — so
+// dragover handlers rely on this to decide their behavior.
+let currentDragKind = null;
+
 // Parse a panel-drag payload's source index from a drop event.
 function dragPanelIndex(e) {
   let payload;
@@ -262,9 +306,32 @@ function dragPanelIndex(e) {
   if (!payload || payload.kind !== 'panel' || typeof payload.pi !== 'number') return null;
   return payload.pi;
 }
+// Parse a group-drag payload's source name from a drop event.
+function dragGroupName(e) {
+  let payload;
+  try { payload = JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return null; }
+  if (!payload || payload.kind !== 'group' || typeof payload.name !== 'string') return null;
+  return payload.name;
+}
+function dragKind() { return currentDragKind; }
 function isBeforeMidpoint(e, el) {
   const r = el.getBoundingClientRect();
   return (e.clientY - r.top) < r.height / 2;
+}
+
+// Reorder group `from` to sit before/after the group at `target` in config.panelGroups.
+// Panels keep their group membership; only the section order changes.
+function reorderGroup(from, target, before) {
+  const groups = panelGroups();
+  const fi = groups.indexOf(from);
+  const ti = groups.indexOf(target);
+  if (fi < 0 || ti < 0 || from === target) return;
+  groups.splice(fi, 1);
+  let insertAt = groups.indexOf(target);
+  if (!before) insertAt += 1;
+  insertAt = Math.max(0, Math.min(insertAt, groups.length));
+  groups.splice(insertAt, 0, from);
+  renderPanels();
 }
 
 // Move panel at index `from` into `group`, optionally positioned relative to a target panel.
