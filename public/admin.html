@@ -81,6 +81,12 @@
     .assigned-head .ah-all { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-dim); white-space: nowrap; cursor: pointer; }
     .assigned-head .ah-all input { width: 16px; height: 16px; }
     .assigned-head .btn.sm { min-height: 34px; padding: 0 12px; }
+    /* Missing-head warning: a full board restore changed head IDs. */
+    .assigned-head .ah-warn { margin-top: 8px; padding: 8px 10px; border-radius: 6px;
+      background: color-mix(in srgb, var(--danger) 12%, var(--panel)); border: 1px solid
+      color-mix(in srgb, var(--danger) 45%, transparent); color: var(--ink);
+      font-size: 12px; line-height: 1.45; white-space: normal; }
+    .assigned-head:has(.ah-warn) { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
     a.tab { color: var(--ink-dim); text-decoration: none; margin-right: 16px; }
     a.tab.active { color: var(--accent); }
     .admin-clock { font-family: var(--mono, monospace); font-variant-numeric: tabular-nums;

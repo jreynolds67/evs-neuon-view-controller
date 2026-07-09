@@ -532,8 +532,16 @@ function renderHeadList(pi) {
         <button class="btn sm del ah-del">Remove</button>
       </div>`;
     row.querySelector('.ah-source').textContent =
-      `${card ? (card.label || card.id) : h.cardId + ' (missing card)'} · ${h.boardName || h.headUuid}`
-      + (h.missing ? ' · ⚠ not found on board' : '');
+      `${card ? (card.label || card.id) : h.cardId + ' (missing card)'} · ${h.boardName || h.headUuid}`;
+    if (h.missing) {
+      const warn = document.createElement('div');
+      warn.className = 'ah-warn';
+      warn.textContent = '⚠ This head’s ID no longer exists on the board. This usually means '
+        + 'a full board restore was performed from the Neuron web GUI, which replaces every '
+        + 'head (and its ID). Re-add this head from the current board heads, then delete this '
+        + 'entry — its layout placement and snapshot filter will need to be set again.';
+      row.querySelector('.ah-top').after(warn);
+    }
     row.querySelector('.ah-label').addEventListener('input', (e) => { h.label = e.target.value; });
     row.querySelector('.ah-all-cb').addEventListener('change', (e) => {
       if (e.target.checked) h.showAllSnapshots = true; else delete h.showAllSnapshots;
@@ -937,7 +945,7 @@ async function refreshAllHeadNames() {
   if ($('hfCard').value) renderGlobalHeadFilters($('hfCard').value);
 
   stateEl.textContent = `Updated ${updated} name${updated === 1 ? '' : 's'}`
-    + (missing ? `, ${missing} head${missing === 1 ? '' : 's'} not found on board` : '')
+    + (missing ? `, ${missing} head${missing === 1 ? '' : 's'} missing — see warnings below (a full board restore replaces head IDs)` : '')
     + (failedCards.length ? `, ${failedCards.length} card${failedCards.length === 1 ? '' : 's'} unreachable` : '')
     + '. Save config to keep.';
 }
