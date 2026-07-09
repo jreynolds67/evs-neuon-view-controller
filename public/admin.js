@@ -252,12 +252,15 @@ function renderPanelListInto(listCol) {
 
 function buildPanelListItem(p, pi) {
   const item = document.createElement('button');
-  item.className = 'panel-list-item' + (pi === selectedPanel ? ' active' : '');
+  const hasMissing = (p.heads || []).some((h) => h.missing);
+  item.className = 'panel-list-item' + (pi === selectedPanel ? ' active' : '')
+    + (hasMissing ? ' has-error' : '');
   item.dataset.pi = pi;
   item.draggable = true;
   const name = p.label || p.ip || `Panel ${pi + 1}`;
   const sub = p.ip && p.label ? p.ip : (p.layout === 'strip' ? 'CTP' : '1920×1080');
-  item.innerHTML = `<span class="pli-name"></span><span class="pli-sub muted"></span>`;
+  item.innerHTML = `<span class="pli-name"></span><span class="pli-sub muted"></span>`
+    + (hasMissing ? '<span class="pli-alert" title="One or more assigned heads are missing on the board">⚠</span>' : '');
   item.querySelector('.pli-name').textContent = name;
   item.querySelector('.pli-sub').textContent = sub;
   item.addEventListener('click', () => { selectedPanel = pi; renderPanels(); });

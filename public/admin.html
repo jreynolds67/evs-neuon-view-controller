@@ -106,7 +106,10 @@
       max-height: calc(200vh - 220px); min-height: 840px; overflow-y: auto; }
     .panel-list-item { text-align: left; background: var(--panel-2); border: 1px solid var(--line);
       border-radius: 8px; padding: 10px 12px; cursor: grab; display: flex; flex-direction: column;
-      gap: 2px; color: var(--ink); }
+      gap: 2px; color: var(--ink); position: relative; }
+    .panel-list-item.has-error { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); }
+    .panel-list-item .pli-alert { position: absolute; right: 8px; bottom: 6px; font-size: 14px;
+      line-height: 1; color: var(--danger); }
     .panel-list-item:active { cursor: grabbing; }
     .panel-list-item:hover { border-color: var(--ink-faint); }
     .panel-list-item.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); }
