@@ -986,17 +986,36 @@ async function renderGlobalHeadFilters(cardId) {
       det.appendChild(sum);
 
       const list = document.createElement('div'); list.className = 'snaplist';
+
+      // Group snapshots by folder (path), matching the operator view: natural-sorted
+      // folder headers, blank path bucketed as "Ungrouped" and shown last.
+      const groups = new Map();
       sortedSnaps.forEach((s) => {
-        const checked = (config.headFilters[key] || []).includes(s.uuid);
-        const lab = document.createElement('label');
-        lab.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''}><span>${s.name}</span>`;
-        lab.querySelector('input').addEventListener('change', (e) => {
-          let arr = config.headFilters[key] ? [...config.headFilters[key]] : [];
-          if (e.target.checked) arr.push(s.uuid); else arr = arr.filter(u => u !== s.uuid);
-          if (arr.length) config.headFilters[key] = arr; else delete config.headFilters[key];
-          sum.querySelector('.hf-count').textContent = `— ${countText()}`;
+        const gkey = s.path && s.path.trim() ? s.path : '\uffffUngrouped';
+        if (!groups.has(gkey)) groups.set(gkey, []);
+        groups.get(gkey).push(s);
+      });
+      const orderedKeys = [...groups.keys()].sort((a, b) => collator.compare(a, b));
+
+      orderedKeys.forEach((gkey) => {
+        const folderLabel = gkey === '\uffffUngrouped' ? 'Ungrouped' : gkey;
+        const fh = document.createElement('div');
+        fh.className = 'snap-folder-head';
+        fh.textContent = folderLabel;
+        list.appendChild(fh);
+
+        groups.get(gkey).forEach((s) => {
+          const checked = (config.headFilters[key] || []).includes(s.uuid);
+          const lab = document.createElement('label');
+          lab.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''}><span>${s.name}</span>`;
+          lab.querySelector('input').addEventListener('change', (e) => {
+            let arr = config.headFilters[key] ? [...config.headFilters[key]] : [];
+            if (e.target.checked) arr.push(s.uuid); else arr = arr.filter(u => u !== s.uuid);
+            if (arr.length) config.headFilters[key] = arr; else delete config.headFilters[key];
+            sum.querySelector('.hf-count').textContent = `— ${countText()}`;
+          });
+          list.appendChild(lab);
         });
-        list.appendChild(lab);
       });
       det.appendChild(list);
       host.appendChild(det);
