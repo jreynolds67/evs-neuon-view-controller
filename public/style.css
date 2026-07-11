@@ -212,6 +212,8 @@ body.strip .sheet .row .btn { min-height: 46px; }
 .toast.show { display: block; }
 .toast.ok { border-color: var(--fire); }
 .toast.err { border-color: var(--danger); }
+/* Toast rendered inside the fullscreen input editor — must sit above the overlay (z 80). */
+.fs-toast { z-index: 90; }
 
 /* ---- Strip layout: 1835 x 291 ---- */
 body.strip .stage { padding: 6px 12px; }

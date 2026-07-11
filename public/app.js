@@ -29,11 +29,15 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'bas
 const byName = (a, b) => collator.compare(a.name || '', b.name || '');
 
 function toast(msg, kind = '') {
-  const t = $('toast');
+  // When the fullscreen input editor is open it covers the page, hiding the normal toast.
+  // Route to the overlay's own toast so the operator sees errors without closing the editor.
+  const fsOpen = $('fsOverlay') && $('fsOverlay').classList.contains('show');
+  const t = fsOpen ? $('fsToast') : $('toast');
+  if (!t) return;
   t.textContent = msg;
-  t.className = `toast show ${kind}`;
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => { t.className = 'toast'; }, 3200);
+  t.className = `toast${fsOpen ? ' fs-toast' : ''} show ${kind}`;
+  clearTimeout(t._t);
+  t._t = setTimeout(() => { t.className = `toast${fsOpen ? ' fs-toast' : ''}`; }, 3200);
 }
 
 async function api(path, opts) {
@@ -238,7 +242,7 @@ async function renderHeads() {
     card.querySelector('.k').textContent = h.label || 'Head';
     if (state.showUuids) card.querySelector('.uuid').textContent = h.headUuid;
     else card.querySelector('.uuid').remove();
-    card.addEventListener('click', () => { state.head = h; state.showAllActive = false; connectWs(h.cardId); renderSnapshots(); });
+    card.addEventListener('click', () => { state.head = h; state.showAllActive = false; closeHeadWatchers(); connectWs(h.cardId); renderSnapshots(); });
 
     // Fullscreen input-group editor is 1920x1080 only — not on the strip.
     const expand = card.querySelector('.expand-btn');
@@ -252,10 +256,16 @@ async function renderHeads() {
     }
 
     grid.appendChild(card);
-    loadPreviewInto(
-      card.querySelector('[data-prev]'),
-      `/api/panel/cards/${h.cardId}/heads/${h.headUuid}/preview`);
+    const prevSlot = card.querySelector('[data-prev]');
+    const prevUrl = `/api/panel/cards/${h.cardId}/heads/${h.headUuid}/preview`;
+    prevSlot.dataset.prevUrl = prevUrl; // remembered so a live board update can refresh it
+    loadPreviewInto(prevSlot, prevUrl);
   });
+
+  // Subscribe to every distinct card shown, so a recall from another panel updates the
+  // affected preview here live.
+  const cardIds = [...new Set(slots.filter((s) => s && s.type === 'head').map((s) => s.cardId))];
+  watchHeadsForCards(cardIds);
 }
 
 // Render the "Show all" toggle into the footer slot. Only appears on the snapshot step
@@ -464,12 +474,49 @@ function restart() {
 
 // ---- Live status (WebSocket) ----------------------------------------------
 
-let ws = null;
+let ws = null;                 // single-card socket used from the snapshot step onward
+let headWatchSockets = [];     // per-card sockets while the heads view is showing
+let previewRefreshTimer = null;
+
 function connectWs(cardId) {
   if (ws) { try { ws.close(); } catch {} ws = null; }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws?card=${encodeURIComponent(cardId)}`);
-  ws.onmessage = () => { /* board pushed an update; lists refresh on next navigation */ };
+  ws.onmessage = () => { /* single-head flow refreshes on navigation; no live redraw here */ };
+}
+
+// While the heads view is showing, watch every distinct card that has a head on screen, so
+// a snapshot recalled from ANOTHER panel updates the affected preview here. The board pushes
+// a message on state change; we debounce (a restore can emit a burst) and reload the visible
+// previews in place.
+function watchHeadsForCards(cardIds) {
+  closeHeadWatchers();
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  cardIds.forEach((cardId) => {
+    let sock;
+    try { sock = new WebSocket(`${proto}://${location.host}/ws?card=${encodeURIComponent(cardId)}`); }
+    catch { return; }
+    sock.onmessage = () => {
+      if (state.step !== 'head') return;
+      clearTimeout(previewRefreshTimer);
+      previewRefreshTimer = setTimeout(refreshVisiblePreviews, 600);
+    };
+    headWatchSockets.push(sock);
+  });
+}
+function closeHeadWatchers() {
+  headWatchSockets.forEach((s) => { try { s.close(); } catch {} });
+  headWatchSockets = [];
+}
+
+// Re-fetch every head preview currently on screen (heads view only). Each preview slot
+// remembers its URL in data-prev-url; we reload them in place, leaving the rest of the UI
+// untouched. Guarded by step so a stray late message can't redraw a different view.
+function refreshVisiblePreviews() {
+  if (state.step !== 'head') return;
+  document.querySelectorAll('[data-prev][data-prev-url]').forEach((slot) => {
+    loadPreviewInto(slot, slot.dataset.prevUrl);
+  });
 }
 
 // Persistent control channel, opened on boot and held for the session. The server sends

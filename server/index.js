@@ -654,8 +654,15 @@ function boardWsUrl(ip) {
 
 function ensureUpstream(cardId, boardIp) {
   let entry = upstream.get(cardId);
-  if (entry && entry.ws && entry.ws.readyState === WebSocket.OPEN) return entry;
-  if (!entry) { entry = { ws: null, subscribers: new Set() }; upstream.set(cardId, entry); }
+  // Reuse an existing socket that is OPEN *or* still CONNECTING — otherwise a second
+  // subscriber arriving mid-connect would spawn a duplicate upstream, and both would relay
+  // the same board messages (panels get everything twice).
+  if (entry && entry.ws &&
+      (entry.ws.readyState === WebSocket.OPEN || entry.ws.readyState === WebSocket.CONNECTING)) {
+    return entry;
+  }
+  if (!entry) { entry = { ws: null, subscribers: new Set(), boardIp, reconnectTimer: null }; upstream.set(cardId, entry); }
+  entry.boardIp = boardIp;
 
   // For wss to a self-signed board, disable cert rejection for THIS socket only.
   const wsOpts = WS_SCHEME === 'wss' ? { rejectUnauthorized: WS_REJECT_UNAUTHORIZED } : {};
@@ -666,8 +673,19 @@ function ensureUpstream(cardId, boardIp) {
       if (sub.readyState === WebSocket.OPEN) sub.send(data.toString());
     }
   });
-  ws.on('close', () => { entry.ws = null; });
-  ws.on('error', () => { try { ws.close(); } catch {} entry.ws = null; });
+  const scheduleReconnect = () => {
+    entry.ws = null;
+    // Only reconnect while someone is actually watching this card. Avoids a dead board
+    // being polled forever after all panels have left.
+    if (entry.subscribers.size === 0) return;
+    if (entry.reconnectTimer) return;
+    entry.reconnectTimer = setTimeout(() => {
+      entry.reconnectTimer = null;
+      if (entry.subscribers.size > 0) ensureUpstream(cardId, entry.boardIp);
+    }, 3000);
+  };
+  ws.on('close', scheduleReconnect);
+  ws.on('error', () => { try { ws.close(); } catch {} /* 'close' fires next and reconnects */ });
   return entry;
 }
 
@@ -724,8 +742,9 @@ wss.on('connection', async (client, req) => {
   entry.subscribers.add(client);
   client.on('close', () => {
     entry.subscribers.delete(client);
-    if (entry.subscribers.size === 0 && entry.ws) {
-      try { entry.ws.close(); } catch {}
+    if (entry.subscribers.size === 0) {
+      if (entry.reconnectTimer) { clearTimeout(entry.reconnectTimer); entry.reconnectTimer = null; }
+      if (entry.ws) { try { entry.ws.close(); } catch {} }
     }
   });
 });
