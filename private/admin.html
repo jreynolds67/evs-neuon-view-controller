@@ -86,15 +86,19 @@
     .bk-controls .bk-field { display: flex; flex-direction: column; gap: 5px; }
     .bk-controls .bk-field > label.muted { font-size: 12px; line-height: 1; }
     .bk-controls .bk-field > select,
-    .bk-controls .bk-field > input { height: 36px; box-sizing: border-box; }
+    .bk-controls .bk-field > input { min-height: 38px; box-sizing: border-box; }
     .bk-controls #bkCard { min-width: 200px; }
     .bk-controls #bkTime { width: 90px; }
     .bk-controls #bkRetention { width: 110px; }
-    .bk-controls .btn.sm { height: 36px; display: inline-flex; align-items: center; }
-    /* The Enabled checkbox aligns its box to the same 36px control height as the inputs. */
-    .bk-controls .bk-check { flex-direction: row; align-items: center; gap: 8px; height: 36px; cursor: pointer; font-size: 14px; }
+    .bk-controls .btn.sm { min-height: 38px; display: inline-flex; align-items: center; }
+    /* The Enabled checkbox aligns its box to the same control height as the inputs. */
+    .bk-controls .bk-check { flex-direction: row; align-items: center; gap: 8px; min-height: 38px; cursor: pointer; font-size: 14px; }
     .bk-controls .bk-check input { width: 18px; height: 18px; margin: 0; }
     .bk-controls .bk-state { align-self: center; }
+    /* Backup file table: truncate long filenames, keep action buttons side by side. */
+    .bk-fname { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+    .bk-actions { white-space: nowrap; text-align: right; }
+    .bk-actions .btn.sm { margin-left: 6px; }
     .assigned-head .btn.sm { min-height: 34px; padding: 0 12px; }
     /* Per-card snapshot storage readout in the Setup card table. */
     .stor { display: flex; align-items: center; gap: 8px; }
@@ -283,7 +287,7 @@
           <label class="muted">Available backups</label>
           <span class="muted" id="bkTotal"></span>
         </div>
-        <table style="margin-top:6px"><thead><tr><th>File</th><th style="width:120px">Size</th><th style="width:180px">Date</th><th style="width:120px"></th></tr></thead>
+        <table style="margin-top:6px; table-layout:fixed; width:100%"><thead><tr><th>File</th><th style="width:100px">Size</th><th style="width:170px">Date</th><th style="width:180px"></th></tr></thead>
           <tbody id="bkFiles"></tbody></table>
       </div>
     </div>

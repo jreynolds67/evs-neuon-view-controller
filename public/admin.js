@@ -1366,10 +1366,10 @@ function renderBackupFiles(files) {
   if (!files.length) { tb.innerHTML = '<tr><td colspan="4" class="muted">No backups yet.</td></tr>'; return; }
   files.forEach((f) => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td class="mono" style="font-size:12px">${esc(f.file)}</td>
+    tr.innerHTML = `<td class="mono bk-fname" title="${esc(f.file)}">${esc(f.file)}</td>
       <td>${fmtBytes(f.bytes)}</td>
       <td>${new Date(f.mtime).toLocaleString()}</td>
-      <td class="inline" style="gap:6px">
+      <td class="bk-actions">
         <a class="btn sm ghost bk-dl" href="/api/admin/backup/download/${encodeURIComponent(f.file)}" download>Download</a>
         <button class="btn sm del bk-del">Delete</button>
       </td>`;
