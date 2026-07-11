@@ -47,6 +47,7 @@ async function api(path, opts) {
     const err = new Error(body.error || `Request failed (${res.status})`);
     err.body = body;        // preserve fields like `ip` for callers
     err.status = res.status;
+    err.code = body.code || null; // e.g. 'RECALLED' for a concurrent-recall conflict
     throw err;
   }
   return body;
@@ -604,6 +605,22 @@ function stopFullscreenPolling() {
   if (fsPollTimer) { clearInterval(fsPollTimer); fsPollTimer = null; }
 }
 
+// One-shot refresh of the enlarged view (used after a rejected edit, so the operator
+// immediately sees the state the other panel's recall produced). Skips if editing.
+async function fsRefreshNow() {
+  if (!fsState || fsIsEditing()) return;
+  try {
+    const head = fsState.head;
+    const [{ widgets }, { groups }] = await Promise.all([
+      api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/preview`),
+      api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/groups`),
+    ]);
+    if (!fsState || fsState.head !== head || fsIsEditing()) return;
+    fsState = { head, widgets: widgets || [], groups: groups || [] };
+    renderFullscreen();
+  } catch { /* leave current view on failure */ }
+}
+
 function closeFullscreen() {
   stopFullscreenPolling();
   $('fsOverlay').classList.remove('show');
@@ -682,7 +699,15 @@ function renderFullscreen() {
         wd.groupUuid = target.uuid;
         renderFullscreen();
         toast(`Window set to input ${num}${target.name ? ' (' + target.name + ')' : ''}`, 'ok');
-      } catch (e) { toast(e.message, 'err'); }
+      } catch (e) {
+        // A concurrent recall from another panel is reported by the server as a RECALLED
+        // conflict. Show the clear message in THIS view's toast, then refresh so the operator
+        // sees the current (externally changed) state rather than their rejected edit.
+        toast(e.message, 'err');
+        if (e.code === 'RECALLED' || e.status === 409) {
+          fsRefreshNow();
+        }
+      }
     };
 
     input.addEventListener('keydown', (e) => {

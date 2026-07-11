@@ -246,9 +246,34 @@ function widgetFingerprint(w) {
 }
 
 export async function setWidgetGroup(ip, headUuid, widgetUuid, groupUuid) {
-  const first = await getHeadWidget(ip, headUuid, widgetUuid);
-  // Re-read right before writing to catch a concurrent modification in the gap.
-  const fresh = await getHeadWidget(ip, headUuid, widgetUuid);
+  // A concurrent snapshot recall from another panel can either change this widget or replace
+  // it entirely (a restore gives widgets new UUIDs). Both mean "the thing you were editing is
+  // gone/stale" — surface them as ONE clear, operator-facing message rather than a raw board
+  // 404 or a low-level conflict string.
+  const recalledErr = () => {
+    const e = new Error('Snapshot recalled by another user. Please try your changes again.');
+    e.status = 409;
+    e.code = 'RECALLED';
+    return e;
+  };
+
+  let first, fresh;
+  try {
+    first = await getHeadWidget(ip, headUuid, widgetUuid);
+    // Re-read right before writing to catch a concurrent modification in the gap.
+    fresh = await getHeadWidget(ip, headUuid, widgetUuid);
+  } catch (e) {
+    // 404 => the widget UUID no longer exists (replaced by a restore). Treat as a recall.
+    if (e && e.status === 404) {
+      log({
+        ip, method: 'CONFLICT', path: `/heads/${headUuid}/widgets/${widgetUuid}`,
+        status: 404, ok: false,
+        detail: 'widget no longer exists — replaced by a concurrent snapshot recall; group change aborted',
+      });
+      throw recalledErr();
+    }
+    throw e;
+  }
 
   if (widgetFingerprint(first) !== widgetFingerprint(fresh)) {
     log({
@@ -256,10 +281,7 @@ export async function setWidgetGroup(ip, headUuid, widgetUuid, groupUuid) {
       status: null, ok: false,
       detail: 'widget changed between reads — concurrent restore or GUI edit; group change aborted to avoid clobber',
     });
-    const err = new Error('This window was changed by another action while you were editing. '
-      + 'Your input-group change was not applied. Please try again.');
-    err.status = 409;
-    throw err;
+    throw recalledErr();
   }
 
   const before = { groupUuid: fresh.groupUuid || '' };
@@ -271,10 +293,17 @@ export async function setWidgetGroup(ip, headUuid, widgetUuid, groupUuid) {
     name: fresh.name || '',
     properties: fresh.properties || { borderColor: '', borderSize: '' },
   };
-  const result = await boardFetch(ip, `/heads/${headUuid}/widgets/${widgetUuid}`, {
-    method: 'PUT',
-    body: JSON.stringify(change),
-  });
+  let result;
+  try {
+    result = await boardFetch(ip, `/heads/${headUuid}/widgets/${widgetUuid}`, {
+      method: 'PUT',
+      body: JSON.stringify(change),
+    });
+  } catch (e) {
+    // The widget could vanish in the tiny gap between our read and this write, too.
+    if (e && e.status === 404) throw recalledErr();
+    throw e;
+  }
   log({
     ip, method: 'GROUP', path: `/heads/${headUuid}/widgets/${widgetUuid}`,
     status: null, ok: true,
