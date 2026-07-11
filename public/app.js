@@ -455,7 +455,14 @@ async function fire() {
     state.head = state.snap = state.srcHead = null;
     renderHeads();
   } catch (e) {
-    toast(e.message, 'err');
+    if (e.code === 'BOARD_BUSY') {
+      // Board mid-operation — safe to retry shortly, nothing was applied.
+      toast(e.message, 'err');
+    } else {
+      // Any other failure: the restore MAY have partially applied on the board, so tell the
+      // operator to verify rather than implying a clean failure that invites a blind re-fire.
+      toast(`${e.message} — the load may not have completed. Check the head before retrying.`, 'err');
+    }
   } finally {
     fireBtn.disabled = false; fireBtn.textContent = 'Load snapshot';
   }

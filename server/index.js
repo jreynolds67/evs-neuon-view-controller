@@ -407,6 +407,19 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
   }
 
   try {
+    // Board-busy pre-check: if the board is mid-import/sync/export, firing into it tends to
+    // return a raw 400. A cheap state read lets us reject with a clear, actionable message
+    // instead. Only block on states that actually conflict with a restore; tolerate a read
+    // failure here (don't let the pre-check itself prevent a legitimate restore).
+    try {
+      const info = await getSnapshotInfo(card.ip);
+      const busy = info && typeof info.state === 'string' && info.state !== 'idle' ? info.state : null;
+      const blocking = busy && /import|export|sync|creating|updating|deleting|not enough/i.test(busy);
+      if (blocking) {
+        return res.status(409).json({ error: `Board is busy (${busy}). Please wait a moment and try again.`, code: 'BOARD_BUSY' });
+      }
+    } catch { /* state read failed — proceed; the restore itself will surface any real error */ }
+
     const result = await restorePartial(card.ip, req.params.snapUuid, [
       { snapshotHeadUuid, targetHeadUuid },
     ]);

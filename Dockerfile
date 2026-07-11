@@ -1,4 +1,8 @@
-FROM node:20-alpine
+# Pinned to 20.19-alpine (>= 20.15) because server/zip.js imports { crc32 } from node:zlib,
+# which was added in Node 20.15. ESM validates named core imports at load, so a floating
+# node:20-alpine tag resolving to an older 20.x would crash the WHOLE app on startup, not
+# just backups. Bump deliberately.
+FROM node:20.19-alpine
 
 WORKDIR /app
 

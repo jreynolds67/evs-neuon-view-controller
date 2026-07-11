@@ -19,10 +19,25 @@ import { buildZip } from './zip.js';
 const BACKUP_DIR = process.env.BACKUP_DIR || '/data/backups';
 
 let timer = null;
+let backupRunning = false; // guards against concurrent runs (manual during scheduled, etc.)
 const status = { lastRun: null, lastError: null, lastFiles: [], nextCheck: null };
 
 async function ensureDir() {
   if (!existsSync(BACKUP_DIR)) await mkdir(BACKUP_DIR, { recursive: true });
+}
+
+// Remove leftover *.tmp files from a backup interrupted mid-write (writeAtomic writes to a
+// .tmp then renames). The prune step skips them, so without this they accumulate forever.
+async function sweepTmp() {
+  try {
+    if (!existsSync(BACKUP_DIR)) return;
+    const files = await readdir(BACKUP_DIR);
+    for (const f of files) {
+      if (f.endsWith('.tmp')) {
+        try { await unlink(join(BACKUP_DIR, f)); console.log(`[backup] swept stale temp file ${f}`); } catch {}
+      }
+    }
+  } catch {}
 }
 
 function safe(s) {
@@ -43,7 +58,24 @@ function fileStamp() {
 
 // Perform one backup of the configured card. Tries a single whole-board export first;
 // if that fails, falls back to one file per distinct folder path found on the board.
+// Guarded entry point. Prevents two backup runs (e.g. a manual "Run now" landing during the
+// scheduled run) from firing concurrent full-board export loops against the same card — a
+// real risk given the boards' storage layer can misbehave under load. A second call while
+// one is running is rejected with a clear status rather than piling on.
 export async function runBackupNow() {
+  if (backupRunning) {
+    console.log('[backup] run requested but one is already in progress — skipped');
+    return { ...status, lastError: 'A backup is already running; this request was skipped.' };
+  }
+  backupRunning = true;
+  try {
+    return await runBackupInternal();
+  } finally {
+    backupRunning = false;
+  }
+}
+
+async function runBackupInternal() {
   await ensureDir();
   const config = await loadConfig();
   const bcfg = config.backup || {};
@@ -229,24 +261,60 @@ export function backupFilePath(file) {
 // backup hasn't run yet today.
 let lastRunDate = null;
 export function startBackupScheduler() {
+  sweepTmp(); // clear any temp files left by a backup interrupted mid-write
+  // Parse "HH:MM" to minutes-of-day; null if malformed.
+  const toMinutes = (hhmm) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm || '');
+    if (!m) return null;
+    const h = +m[1], mi = +m[2];
+    if (h > 23 || mi > 59) return null;
+    return h * 60 + mi;
+  };
   const tick = async () => {
     status.nextCheck = Date.now();
     const config = await loadConfig();
     const bcfg = config.backup || {};
     if (!bcfg.enabled || !(bcfg.cardId || bcfg.target) || !bcfg.timeHHMM) return;
+    const target = toMinutes(bcfg.timeHHMM);
+    if (target == null) return;
     const now = new Date();
-    const p = (n) => String(n).padStart(2, '0');
-    const hhmm = `${p(now.getHours())}:${p(now.getMinutes())}`;
+    const nowMin = now.getHours() * 60 + now.getMinutes();
     const dateStr = todayStamp();
-    if (hhmm === bcfg.timeHHMM && lastRunDate !== dateStr) {
+    // Fire when we're at OR PAST the scheduled minute and haven't run yet today. Using
+    // "past due" instead of exact equality means a delayed tick (busy event loop, a long
+    // prior backup) still triggers today's run instead of silently skipping 24 hours. The
+    // per-day guard (lastRunDate) ensures it only runs once.
+    if (nowMin >= target && lastRunDate !== dateStr) {
       lastRunDate = dateStr;
-      console.log(`[backup] scheduled trigger at ${hhmm}`);
+      console.log(`[backup] scheduled trigger (target ${bcfg.timeHHMM}, now ${p2(now)})`);
       await runBackupNow();
     }
   };
   timer = setInterval(tick, 60000);
   timer.unref?.();
+
+  // On startup, if we're already past today's target time, mark today as done so a redeploy
+  // after the scheduled time doesn't immediately fire an unexpected backup. The missed-minute
+  // protection still applies going forward (a delayed tick within the same day still fires if
+  // the minute was crossed while running). Deployments happen often here, so avoiding a
+  // surprise heavy board export on every restart is the safer default.
+  (async () => {
+    try {
+      const cfg = await loadConfig();
+      const target = toMinutes((cfg.backup || {}).timeHHMM);
+      const now = new Date();
+      if (target != null && (now.getHours() * 60 + now.getMinutes()) >= target) {
+        lastRunDate = todayStamp();
+      }
+    } catch {}
+  })();
+
   console.log('[backup] scheduler started (checks each minute)');
+}
+
+function p2(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 export function backupStatus() {

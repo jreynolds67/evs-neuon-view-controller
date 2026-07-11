@@ -26,7 +26,12 @@ const CONFIG_PATH = process.env.CONFIG_PATH || '/data/config.json';
 //   ]
 // }
 
-const DEFAULT_CONFIG = { cards: [], panels: [], headFilters: {}, settings: { showUuids: true } };
+// Return a FRESH default config each time. A shared object literal would let a later
+// mutation of cache.cards/headFilters (on the empty/failed-load path) poison the defaults
+// for subsequent loads, so every caller gets its own arrays/objects.
+function defaultConfig() {
+  return { cards: [], panels: [], headFilters: {}, settings: { showUuids: true } };
+}
 
 let cache = null;
 
@@ -40,17 +45,18 @@ export async function loadConfig() {
   try {
     const raw = await readFile(CONFIG_PATH, 'utf8');
     const parsed = JSON.parse(raw);
+    const base = defaultConfig();
     cache = {
-      ...DEFAULT_CONFIG,
+      ...base,
       ...parsed,
       headFilters: parsed.headFilters || {},
-      settings: { ...DEFAULT_CONFIG.settings, ...(parsed.settings || {}) },
+      settings: { ...base.settings, ...(parsed.settings || {}) },
     };
     (cache.panels || []).forEach(migratePanel);
     // Discard obsolete per-panel snapshot filters — filtering is global per head now.
     (cache.panels || []).forEach((p) => (p.heads || []).forEach((h) => { delete h.allowedSnapshots; }));
   } catch {
-    cache = { ...DEFAULT_CONFIG, settings: { ...DEFAULT_CONFIG.settings } };
+    cache = defaultConfig();
   }
   return cache;
 }
