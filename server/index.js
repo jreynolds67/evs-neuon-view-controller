@@ -27,6 +27,7 @@ import {
   verifyPassword, createSession, touchSession, destroySession,
   sessionIdFromReq, setSessionCookie, clearSessionCookie,
 } from './auth.js';
+import { createTtlCache } from './cache.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, '..', 'public');
@@ -62,9 +63,21 @@ app.use(express.static(PUBLIC_DIR, {
 
 // --- helpers ---------------------------------------------------------------
 
-// Normalise the requesting panel's IP (strip IPv6-mapped prefix).
+// Whether to trust the X-Forwarded-For header for the client IP. OFF by default: on a flat
+// macvlan with no reverse proxy, XFF is attacker-controlled — anything on the network could
+// forge it to impersonate a registered panel. Only enable when a trusted proxy actually
+// sits in front and sets it, via TRUST_PROXY=1.
+const TRUST_PROXY = String(process.env.TRUST_PROXY || '') === '1';
+
+// Normalise the requesting panel's IP (strip IPv6-mapped prefix). Uses the real TCP socket
+// address unless a trusted proxy is configured (then honour X-Forwarded-For's first hop).
 function clientIp(req) {
-  let ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  let ip = '';
+  if (TRUST_PROXY && req.headers['x-forwarded-for']) {
+    ip = req.headers['x-forwarded-for'].split(',')[0].trim();
+  } else {
+    ip = (req.socket.remoteAddress || '').trim();
+  }
   if (ip.startsWith('::ffff:')) ip = ip.slice(7);
   return ip;
 }
@@ -276,12 +289,23 @@ app.get('/api/panel/cards/:cardId/snapshots/:snapUuid/heads', async (req, res) =
 });
 
 // Preview: widget layout currently on a LIVE head.
+// Short-lived caches for the two endpoints panels poll continuously (every ~5s). With many
+// panels watching the same head, coalescing collapses N simultaneous polls into ONE board
+// fetch, so board load tracks the number of distinct heads/cards viewed rather than panel
+// count. TTL is under the poll interval so a manual navigation still gets near-fresh data.
+const PREVIEW_TTL_MS = 3500;
+const GROUPS_TTL_MS = 3500;
+const previewCache = createTtlCache(PREVIEW_TTL_MS);
+const groupsCache = createTtlCache(GROUPS_TTL_MS);
+setInterval(() => { previewCache.prune(30000); groupsCache.prune(30000); }, 30000).unref?.();
+
 app.get('/api/panel/cards/:cardId/heads/:headUuid/preview', async (req, res) => {
   const r = await resolveHeadRequest(req, res);
   if (!r) return;
   const { card } = r;
   try {
-    const widgets = await getHeadWidgets(card.ip, req.params.headUuid);
+    const key = `${card.ip}::${req.params.headUuid}`;
+    const widgets = await previewCache.get(key, () => getHeadWidgets(card.ip, req.params.headUuid));
     res.json({ widgets: (widgets || []).map(normalizeWidgetForPreview) });
   } catch (e) { sendErr(res, e); }
 });
@@ -299,7 +323,9 @@ app.get('/api/panel/cards/:cardId/heads/:headUuid/groups', async (req, res) => {
   if (!r) return;
   const { card } = r;
   try {
-    const groups = await getInputGroups(card.ip);
+    // Groups are per-card (not per-head), so key by IP — every head on a card shares one
+    // cached result, further cutting board fetches.
+    const groups = await groupsCache.get(card.ip, () => getInputGroups(card.ip));
     const out = (groups || []).map((g) => ({
       uuid: g.uuid,
       name: g.name || '',
@@ -322,6 +348,9 @@ app.post('/api/panel/cards/:cardId/heads/:headUuid/widgets/:widgetUuid/group', a
   if (!groupUuid) return res.status(400).json({ error: 'groupUuid is required' });
   try {
     const result = await setWidgetGroup(card.ip, req.params.headUuid, req.params.widgetUuid, groupUuid);
+    // The write changed this head's layout — drop its cached preview so the next poll (and
+    // the editor's own refresh) reflects it immediately rather than serving a stale ~3.5s copy.
+    previewCache.invalidate(`${card.ip}::${req.params.headUuid}`);
     res.json({ ok: true, result });
   } catch (e) { sendErr(res, e); }
 });
@@ -381,6 +410,9 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
     const result = await restorePartial(card.ip, req.params.snapUuid, [
       { snapshotHeadUuid, targetHeadUuid },
     ]);
+    // The restore changed the target head — drop its cached preview so panels see the new
+    // content on their next poll instead of a stale copy.
+    previewCache.invalidate(`${card.ip}::${targetHeadUuid}`);
     res.json({ ok: true, result });
   } catch (e) { sendErr(res, e); }
 });

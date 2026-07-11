@@ -493,17 +493,23 @@ function connectWs(_cardId) { /* intentionally does nothing */ }
 // poll: re-fetch the visible previews on a fixed interval. This is what makes a recall done
 // from ANOTHER panel appear here without the operator navigating. Polling only runs on the
 // heads view and is cleared the moment we leave it, so it adds no load elsewhere.
+// Base interval plus per-cycle random jitter so panels don't all poll in the same instant
+// (a config-save reload would otherwise re-synchronize every panel's timer into a herd).
 const PREVIEW_POLL_MS = 5000;
+const POLL_JITTER_MS = 2000;
+function nextPollDelay() { return PREVIEW_POLL_MS + Math.floor(Math.random() * POLL_JITTER_MS); }
+
 function startPreviewPolling() {
   stopPreviewPolling();
-  previewPollTimer = setInterval(() => {
+  const tick = () => {
     if (state.step !== 'head') { stopPreviewPolling(); return; }
-    if (document.hidden) return; // don't poll a backgrounded tab
-    refreshVisiblePreviews();
-  }, PREVIEW_POLL_MS);
+    if (!document.hidden) refreshVisiblePreviews();
+    previewPollTimer = setTimeout(tick, nextPollDelay());
+  };
+  previewPollTimer = setTimeout(tick, nextPollDelay());
 }
 function stopPreviewPolling() {
-  if (previewPollTimer) { clearInterval(previewPollTimer); previewPollTimer = null; }
+  if (previewPollTimer) { clearTimeout(previewPollTimer); previewPollTimer = null; }
 }
 
 // Re-fetch every head preview currently on screen (heads view only). Each preview slot
@@ -580,29 +586,31 @@ function fsIsEditing() {
 // Poll the enlarged view so a snapshot recalled from ANOTHER panel redraws it. A cycle that
 // lands while the operator is mid-edit is skipped entirely (see fsIsEditing). Because no
 // input is open when we DO redraw, a full renderFullscreen() is safe here.
-const FS_POLL_MS = 5000;
 function startFullscreenPolling() {
   stopFullscreenPolling();
-  fsPollTimer = setInterval(async () => {
+  const tick = async () => {
     if (!fsState) { stopFullscreenPolling(); return; }
-    if (document.hidden) return;   // don't poll a backgrounded tab
-    if (fsIsEditing()) return;     // don't disturb an in-progress edit; retry next cycle
-    try {
-      const head = fsState.head;
-      const [{ widgets }, { groups }] = await Promise.all([
-        api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/preview`),
-        api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/groups`),
-      ]);
-      // Guard against races: the view may have closed, or an edit may have begun, during the
-      // fetch. Bail rather than redraw over either.
-      if (!fsState || fsState.head !== head || fsIsEditing()) return;
-      fsState = { head, widgets: widgets || [], groups: groups || [] };
-      renderFullscreen();
-    } catch { /* transient poll failure — keep the current view, try again next cycle */ }
-  }, FS_POLL_MS);
+    if (!document.hidden && !fsIsEditing()) {
+      try {
+        const head = fsState.head;
+        const [{ widgets }, { groups }] = await Promise.all([
+          api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/preview`),
+          api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/groups`),
+        ]);
+        // Guard against races: the view may have closed, or an edit may have begun, during
+        // the fetch. Bail rather than redraw over either.
+        if (fsState && fsState.head === head && !fsIsEditing()) {
+          fsState = { head, widgets: widgets || [], groups: groups || [] };
+          renderFullscreen();
+        }
+      } catch { /* transient poll failure — keep the current view, try again next cycle */ }
+    }
+    if (fsState) fsPollTimer = setTimeout(tick, nextPollDelay());
+  };
+  fsPollTimer = setTimeout(tick, nextPollDelay());
 }
 function stopFullscreenPolling() {
-  if (fsPollTimer) { clearInterval(fsPollTimer); fsPollTimer = null; }
+  if (fsPollTimer) { clearTimeout(fsPollTimer); fsPollTimer = null; }
 }
 
 // One-shot refresh of the enlarged view (used after a rejected edit, so the operator
