@@ -5,8 +5,12 @@ services:
     # image: ghcr.io/<your-user>/neuron-mv-control:latest
     container_name: neuron-mv-control
     restart: unless-stopped
-    ports:
-      - "80:8080"
+    # Attached directly to the macvlan network below — the container has its own LAN IP
+    # (10.10.251.90) and is reached at that address on port 8080. No host port mapping is
+    # used on macvlan (the container isn't behind the host's network stack).
+    networks:
+      companion_companion_net:
+        ipv4_address: 10.10.251.90
     environment:
       # Admin access is a username/password stored (hashed) in config.json under
       # `admin: { user, passwordHash }`. Generate a hash with:
@@ -22,6 +26,11 @@ services:
       BOARD_TLS_REJECT_UNAUTHORIZED: ${BOARD_TLS_REJECT_UNAUTHORIZED:-false}
     volumes:
       - neuron_config:/data
+
+networks:
+  # Pre-existing macvlan created outside this stack; we attach to it rather than define it.
+  companion_companion_net:
+    external: true
 
 volumes:
   neuron_config:

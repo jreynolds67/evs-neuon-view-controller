@@ -44,6 +44,10 @@ async function loadConfig() {
     config.headFilters ||= {};
     config.panelGroups ||= [];
     config.settings ||= { showUuids: true };
+    // backup and shareSweep are owned by their own tabs/endpoints. Drop them from the held
+    // config so the main "Save" never round-trips a stale copy (the server ignores them
+    // too, but not sending them at all is the cleaner guard).
+    delete config.backup; delete config.shareSweep;
     $('showUuids').checked = config.settings.showUuids !== false;
     renderCards(); renderPanels(); renderHeadFilterCards();
     setLoadState('Loaded');

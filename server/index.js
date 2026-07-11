@@ -413,21 +413,21 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
   if (!next.headFilters || typeof next.headFilters !== 'object') next.headFilters = {};
   if (!Array.isArray(next.panelGroups)) next.panelGroups = [];
   (next.panels || []).forEach((p) => { if (!Array.isArray(p.heads)) p.heads = []; });
-  // The admin credential is never sent to or accepted from the client. Always preserve the
-  // stored value so a config save can't clear or alter the login.
-  {
-    const existing = await loadConfig();
-    if (existing.admin) next.admin = existing.admin; else delete next.admin;
-  }
-  // Preserve backup config (managed via its own endpoint) if the admin PUT omits it.
-  if (next.backup === undefined) {
-    const existing = await loadConfig();
-    if (existing.backup) next.backup = existing.backup;
-  }
-  if (next.shareSweep === undefined) {
-    const existing = await loadConfig();
-    if (existing.shareSweep) next.shareSweep = existing.shareSweep;
-  }
+
+  // These sub-objects are owned by their own dedicated endpoints, not the main config page:
+  //   admin      -> auth (login), never sent to or accepted from the client
+  //   backup     -> PUT /api/admin/backup
+  //   shareSweep -> PUT /api/admin/sharesweep
+  // The admin page loads a full config copy at page-load and holds it; if the backup time
+  // (etc.) is later changed via its own control, the page's copy goes stale. Accepting
+  // those fields here would let a subsequent main "Save" clobber the newer values with the
+  // stale ones. So we ALWAYS take these three from stored config and ignore whatever the
+  // client sent for them.
+  const existing = await loadConfig();
+  if (existing.admin) next.admin = existing.admin; else delete next.admin;
+  if (existing.backup !== undefined) next.backup = existing.backup; else delete next.backup;
+  if (existing.shareSweep !== undefined) next.shareSweep = existing.shareSweep; else delete next.shareSweep;
+
   await saveConfig(next);
   // Tell every connected panel to reload so config changes apply immediately.
   broadcastControl({ type: 'reload' });
