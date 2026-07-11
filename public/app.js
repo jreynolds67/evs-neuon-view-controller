@@ -242,7 +242,7 @@ async function renderHeads() {
     card.querySelector('.k').textContent = h.label || 'Head';
     if (state.showUuids) card.querySelector('.uuid').textContent = h.headUuid;
     else card.querySelector('.uuid').remove();
-    card.addEventListener('click', () => { state.head = h; state.showAllActive = false; closeHeadWatchers(); connectWs(h.cardId); renderSnapshots(); });
+    card.addEventListener('click', () => { state.head = h; state.showAllActive = false; stopPreviewPolling(); connectWs(h.cardId); renderSnapshots(); });
 
     // Fullscreen input-group editor is 1920x1080 only — not on the strip.
     const expand = card.querySelector('.expand-btn');
@@ -262,10 +262,8 @@ async function renderHeads() {
     loadPreviewInto(prevSlot, prevUrl);
   });
 
-  // Subscribe to every distinct card shown, so a recall from another panel updates the
-  // affected preview here live.
-  const cardIds = [...new Set(slots.filter((s) => s && s.type === 'head').map((s) => s.cardId))];
-  watchHeadsForCards(cardIds);
+  // Poll to keep these previews current, so a recall from another panel shows up here.
+  startPreviewPolling();
 }
 
 // Render the "Show all" toggle into the footer slot. Only appears on the snapshot step
@@ -475,50 +473,35 @@ function restart() {
 // ---- Live status (WebSocket) ----------------------------------------------
 
 let ws = null;                 // single-card socket used from the snapshot step onward
-let headWatchSockets = [];     // per-card sockets while the heads view is showing
+let previewPollTimer = null;   // interval that refreshes head previews on the heads view
 let previewRefreshTimer = null;
 
-function connectWs(cardId) {
-  if (ws) { try { ws.close(); } catch {} ws = null; }
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws?card=${encodeURIComponent(cardId)}`);
-  ws.onmessage = () => { /* single-head flow refreshes on navigation; no live redraw here */ };
-}
+// The per-card board WebSocket is not used: the Neuron boards don't expose a WS endpoint we
+// can consume (handshake returns HTTP 200, not a socket), and previews are kept current by
+// polling instead. Kept as a no-op so call sites don't need to change.
+function connectWs(_cardId) { /* intentionally does nothing */ }
 
-// While the heads view is showing, watch every distinct card that has a head on screen, so
-// a snapshot recalled from ANOTHER panel updates the affected preview here. The board pushes
-// a message on state change; we debounce (a restore can emit a burst) and reload the visible
-// previews in place.
-function watchHeadsForCards(cardIds) {
-  closeHeadWatchers();
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  cardIds.forEach((cardId) => {
-    let sock;
-    const url = `${proto}://${location.host}/ws?card=${encodeURIComponent(cardId)}`;
-    try { sock = new WebSocket(url); }
-    catch (err) { console.warn('[watch] construct failed', cardId, err); return; }
-    sock.onopen = () => console.log('[watch] open', cardId);
-    sock.onclose = (e) => console.log('[watch] close', cardId, e.code);
-    sock.onerror = (e) => console.warn('[watch] error', cardId, e);
-    sock.onmessage = (ev) => {
-      console.log('[watch] message from', cardId, '- refreshing previews. payload:',
-        (typeof ev.data === 'string' ? ev.data.slice(0, 120) : '(binary)'));
-      if (state.step !== 'head') { console.log('[watch] not on heads step, skipping'); return; }
-      clearTimeout(previewRefreshTimer);
-      previewRefreshTimer = setTimeout(refreshVisiblePreviews, 600);
-    };
-    headWatchSockets.push(sock);
-  });
-  console.log('[watch] watching cards:', cardIds);
+// Keep head previews current while the heads view is showing. The Neuron boards don't emit
+// a usable WebSocket event on a partial restore, so instead of relying on a live push we
+// poll: re-fetch the visible previews on a fixed interval. This is what makes a recall done
+// from ANOTHER panel appear here without the operator navigating. Polling only runs on the
+// heads view and is cleared the moment we leave it, so it adds no load elsewhere.
+const PREVIEW_POLL_MS = 5000;
+function startPreviewPolling() {
+  stopPreviewPolling();
+  previewPollTimer = setInterval(() => {
+    if (state.step !== 'head') { stopPreviewPolling(); return; }
+    if (document.hidden) return; // don't poll a backgrounded tab
+    refreshVisiblePreviews();
+  }, PREVIEW_POLL_MS);
 }
-function closeHeadWatchers() {
-  headWatchSockets.forEach((s) => { try { s.close(); } catch {} });
-  headWatchSockets = [];
+function stopPreviewPolling() {
+  if (previewPollTimer) { clearInterval(previewPollTimer); previewPollTimer = null; }
 }
 
 // Re-fetch every head preview currently on screen (heads view only). Each preview slot
 // remembers its URL in data-prev-url; we reload them in place, leaving the rest of the UI
-// untouched. Guarded by step so a stray late message can't redraw a different view.
+// untouched. Guarded by step so a stray late timer can't redraw a different view.
 function refreshVisiblePreviews() {
   if (state.step !== 'head') return;
   document.querySelectorAll('[data-prev][data-prev-url]').forEach((slot) => {
@@ -560,6 +543,7 @@ function connectControlWs() {
 let fsState = null; // { head, widgets, groups }
 
 async function openFullscreen(head) {
+  stopPreviewPolling(); // the editor covers the heads grid; don't poll behind it
   const ov = $('fsOverlay');
   ov.classList.add('show');
   $('fsTitle').textContent = head.label || 'Head';
@@ -580,6 +564,7 @@ async function openFullscreen(head) {
 function closeFullscreen() {
   $('fsOverlay').classList.remove('show');
   fsState = null;
+  if (state.step === 'head') startPreviewPolling(); // resume live preview updates
 }
 
 function groupByUuid(uuid) {

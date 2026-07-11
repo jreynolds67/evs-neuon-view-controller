@@ -668,9 +668,7 @@ function ensureUpstream(cardId, boardIp) {
   const wsOpts = WS_SCHEME === 'wss' ? { rejectUnauthorized: WS_REJECT_UNAUTHORIZED } : {};
   const ws = new WebSocket(boardWsUrl(boardIp), wsOpts);
   entry.ws = ws;
-  ws.on('open', () => console.log(`[upstream] board WS open: card=${cardId} ${boardWsUrl(boardIp)}`));
   ws.on('message', (data) => {
-    console.log(`[upstream] board msg card=${cardId} len=${data.length} subs=${entry.subscribers.size}`);
     for (const sub of entry.subscribers) {
       if (sub.readyState === WebSocket.OPEN) sub.send(data.toString());
     }
@@ -679,13 +677,33 @@ function ensureUpstream(cardId, boardIp) {
     entry.ws = null;
     if (entry.subscribers.size === 0) return;
     if (entry.reconnectTimer) return;
+    // Exponential backoff with a cap, and a give-up ceiling. A board WS that always fails
+    // (e.g. no reachable WS endpoint) must not produce an endless error storm against the
+    // boards — back off 3s, 6s, 12s… up to 60s, then stop trying for this session.
+    entry.failCount = (entry.failCount || 0) + 1;
+    if (entry.failCount > 8) {
+      if (!entry.gaveUp) {
+        entry.gaveUp = true;
+        console.warn(`[upstream] giving up on board WS card=${cardId} after ${entry.failCount} failures`);
+      }
+      return;
+    }
+    const delay = Math.min(60000, 3000 * Math.pow(2, entry.failCount - 1));
     entry.reconnectTimer = setTimeout(() => {
       entry.reconnectTimer = null;
       if (entry.subscribers.size > 0) ensureUpstream(cardId, entry.boardIp);
-    }, 3000);
+    }, delay);
   };
-  ws.on('close', (code) => { console.log(`[upstream] board WS close card=${cardId} code=${code}`); scheduleReconnect(); });
-  ws.on('error', (e) => { console.warn(`[upstream] board WS error card=${cardId}:`, e.message); try { ws.close(); } catch {} });
+  ws.on('open', () => {
+    entry.failCount = 0; entry.gaveUp = false; entry.errLogged = false;
+    console.log(`[upstream] board WS open card=${cardId} ${boardWsUrl(boardIp)}`);
+  });
+  ws.on('close', () => { scheduleReconnect(); });
+  ws.on('error', (e) => {
+    // Log only the first error per card to avoid flooding the container log.
+    if (!entry.errLogged) { entry.errLogged = true; console.warn(`[upstream] board WS error card=${cardId}: ${e.message}`); }
+    try { ws.close(); } catch {}
+  });
   return entry;
 }
 
