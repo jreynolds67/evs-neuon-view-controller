@@ -164,21 +164,27 @@ function buildPreviewSvg(widgets, { w = 320, h = 180 } = {}) {
   return svg;
 }
 
-async function loadPreviewInto(container, url, emptyMsg) {
-  container.innerHTML = '<div class="preview-loading">Loading preview…</div>';
+async function loadPreviewInto(container, url, { quiet = false } = {}) {
+  // On the first load, show a placeholder — there's nothing to display yet. On a background
+  // refresh (quiet), leave the existing preview visible and only swap it once the new SVG is
+  // built, so a periodic poll doesn't flicker "Loading preview…" every few seconds.
+  if (!quiet) container.innerHTML = '<div class="preview-loading">Loading preview…</div>';
   try {
     const data = await api(url);
-    container.innerHTML = '';
-    const svg = buildPreviewSvg(data.widgets || []);
-    container.appendChild(svg);
+    const next = document.createDocumentFragment();
+    next.appendChild(buildPreviewSvg(data.widgets || []));
     if (data.resolved === false) {
       const note = document.createElement('div');
       note.className = 'preview-note';
       note.textContent = 'Snapshot layout could not be fully read on this board.';
-      container.appendChild(note);
+      next.appendChild(note);
     }
+    container.replaceChildren(next); // atomic swap — no intermediate empty state
   } catch (e) {
-    container.innerHTML = `<div class="preview-note err">${e.message}</div>`;
+    // On a quiet refresh, keep the last good preview rather than replacing it with an error
+    // (a transient poll failure shouldn't blank a working preview). Only surface errors on
+    // an explicit load.
+    if (!quiet) container.innerHTML = `<div class="preview-note err">${e.message}</div>`;
   }
 }
 
@@ -505,7 +511,7 @@ function stopPreviewPolling() {
 function refreshVisiblePreviews() {
   if (state.step !== 'head') return;
   document.querySelectorAll('[data-prev][data-prev-url]').forEach((slot) => {
-    loadPreviewInto(slot, slot.dataset.prevUrl);
+    loadPreviewInto(slot, slot.dataset.prevUrl, { quiet: true });
   });
 }
 
