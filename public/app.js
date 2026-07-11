@@ -356,7 +356,11 @@ async function pickSnapshot(s) {
 }
 
 function renderSourceHeads(heads) {
+  const token = navSeq; // pickSnapshot already bumped; capture the current value
   state.step = 'source'; setSteps();
+  // Defensive: if state was cleared underneath us (e.g. Start Over between the heads
+  // fetch resolving and this render), abort rather than dereference a null snap/head.
+  if (!state.snap || !state.head) return;
   $('stageTitle').textContent = 'Select source head in snapshot';
   $('stageHint').textContent = `${state.snap.name} → ${state.head.label}`;
   grid.innerHTML = '';
@@ -387,6 +391,7 @@ function renderSourceHeads(heads) {
   // faster than a separate model fetch per head.
   api(`/api/panel/cards/${state.head.cardId}/snapshots/${state.snap.uuid}/previews`)
     .then(({ heads: byHead }) => {
+      if (navStale(token)) return; // navigated away (Back/Start Over) while previews loaded
       previewSlots.forEach((slot, uuid) => {
         const widgets = (byHead && byHead[uuid]) || [];
         slot.innerHTML = '';
@@ -394,6 +399,7 @@ function renderSourceHeads(heads) {
       });
     })
     .catch((e) => {
+      if (navStale(token)) return;
       previewSlots.forEach((slot) => {
         slot.innerHTML = `<div class="preview-note err">${e.message}</div>`;
       });

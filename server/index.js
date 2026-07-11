@@ -18,7 +18,7 @@ import {
   extractSnapshotHeadWidgets, getSnapshotModelCached, buildSnapshotWidgetIndex,
   getInputGroups, setWidgetGroup,
 } from './board.js';
-import { getEntries, clear as clearLog } from './logger.js';
+import { getEntries, clear as clearLog, log } from './logger.js';
 import { startShareSweep, shareSweepStatus, runShareSweepNow, applyShareSweepConfig } from './sharesweep.js';
 import {
   startBackupScheduler, runBackupNow, backupStatus, listBackups, backupFilePath,
@@ -236,6 +236,20 @@ app.get('/api/panel/cards/:cardId/snapshots/:snapUuid/heads', async (req, res) =
     ]);
     // Extractor already returns only named heads (unnamed entries aren't selectable).
     let heads = extractSnapshotHeads(modelEntry.model);
+
+    // Diagnostic: when extraction yields nothing, record whether the model blob parsed at
+    // all, so a failure can be told apart from "parsed fine but no named heads." This is
+    // what distinguishes a board that returned a malformed blob (e.g. a snapshot name with
+    // unescaped characters) from a genuinely head-less snapshot.
+    if (heads.length === 0) {
+      const raw = modelEntry.model && typeof modelEntry.model.data === 'string' ? modelEntry.model.data : '';
+      const rootType = modelEntry.root && typeof modelEntry.root === 'object' ? 'object' : typeof modelEntry.root;
+      log({
+        ip: card.ip, method: 'PARSE', path: `/snapshots/${req.params.snapUuid}/model`,
+        status: null, ok: false,
+        detail: `no heads extracted; rootType=${rootType} rawLen=${raw.length} rawHead=${raw.slice(0, 80)}`,
+      });
+    }
 
     // Light backstop: if the snapshot's head UUIDs line up with live board heads, keep
     // the intersection. If they don't line up at all (e.g. an imported snapshot), keep
