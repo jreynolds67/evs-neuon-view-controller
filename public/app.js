@@ -494,15 +494,22 @@ function watchHeadsForCards(cardIds) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   cardIds.forEach((cardId) => {
     let sock;
-    try { sock = new WebSocket(`${proto}://${location.host}/ws?card=${encodeURIComponent(cardId)}`); }
-    catch { return; }
-    sock.onmessage = () => {
-      if (state.step !== 'head') return;
+    const url = `${proto}://${location.host}/ws?card=${encodeURIComponent(cardId)}`;
+    try { sock = new WebSocket(url); }
+    catch (err) { console.warn('[watch] construct failed', cardId, err); return; }
+    sock.onopen = () => console.log('[watch] open', cardId);
+    sock.onclose = (e) => console.log('[watch] close', cardId, e.code);
+    sock.onerror = (e) => console.warn('[watch] error', cardId, e);
+    sock.onmessage = (ev) => {
+      console.log('[watch] message from', cardId, '- refreshing previews. payload:',
+        (typeof ev.data === 'string' ? ev.data.slice(0, 120) : '(binary)'));
+      if (state.step !== 'head') { console.log('[watch] not on heads step, skipping'); return; }
       clearTimeout(previewRefreshTimer);
       previewRefreshTimer = setTimeout(refreshVisiblePreviews, 600);
     };
     headWatchSockets.push(sock);
   });
+  console.log('[watch] watching cards:', cardIds);
 }
 function closeHeadWatchers() {
   headWatchSockets.forEach((s) => { try { s.close(); } catch {} });

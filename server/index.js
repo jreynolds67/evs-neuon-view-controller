@@ -668,15 +668,15 @@ function ensureUpstream(cardId, boardIp) {
   const wsOpts = WS_SCHEME === 'wss' ? { rejectUnauthorized: WS_REJECT_UNAUTHORIZED } : {};
   const ws = new WebSocket(boardWsUrl(boardIp), wsOpts);
   entry.ws = ws;
+  ws.on('open', () => console.log(`[upstream] board WS open: card=${cardId} ${boardWsUrl(boardIp)}`));
   ws.on('message', (data) => {
+    console.log(`[upstream] board msg card=${cardId} len=${data.length} subs=${entry.subscribers.size}`);
     for (const sub of entry.subscribers) {
       if (sub.readyState === WebSocket.OPEN) sub.send(data.toString());
     }
   });
   const scheduleReconnect = () => {
     entry.ws = null;
-    // Only reconnect while someone is actually watching this card. Avoids a dead board
-    // being polled forever after all panels have left.
     if (entry.subscribers.size === 0) return;
     if (entry.reconnectTimer) return;
     entry.reconnectTimer = setTimeout(() => {
@@ -684,8 +684,8 @@ function ensureUpstream(cardId, boardIp) {
       if (entry.subscribers.size > 0) ensureUpstream(cardId, entry.boardIp);
     }, 3000);
   };
-  ws.on('close', scheduleReconnect);
-  ws.on('error', () => { try { ws.close(); } catch {} /* 'close' fires next and reconnects */ });
+  ws.on('close', (code) => { console.log(`[upstream] board WS close card=${cardId} code=${code}`); scheduleReconnect(); });
+  ws.on('error', (e) => { console.warn(`[upstream] board WS error card=${cardId}:`, e.message); try { ws.close(); } catch {} });
   return entry;
 }
 
