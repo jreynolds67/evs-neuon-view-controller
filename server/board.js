@@ -48,6 +48,7 @@ async function boardFetch(ip, path, options = {}) {
   const raw = options.raw === true;
   const opts = { ...options };
   delete opts.raw;
+  delete opts.diagnostic;
   try {
     const res = await fetch(url, {
       ...opts,
@@ -86,7 +87,15 @@ async function boardFetch(ip, path, options = {}) {
     const text = await res.text();
     let body;
     try { body = text ? JSON.parse(text) : null; } catch { body = text; }
-    log({ ip, path, method, url, status: res.status, durationMs, ok: true });
+    // Successful JSON calls: log the response size always, and — if the caller supplied a
+    // `diagnostic` summarizer — a short summary of the body. This makes odd board behaviour
+    // (weird storage numbers, unexpected states, empty lists) visible in the activity log
+    // without dumping whole payloads.
+    let detail = `${text.length} bytes`;
+    if (typeof options.diagnostic === 'function') {
+      try { const d = options.diagnostic(body); if (d) detail += ` · ${d}`; } catch {}
+    }
+    log({ ip, path, method, url, status: res.status, durationMs, ok: true, detail });
     return body;
   } catch (e) {
     if (e.status === undefined) {
@@ -110,7 +119,19 @@ export async function getSelf(ip) {
 }
 
 export async function getSnapshotInfo(ip) {
-  return boardFetch(ip, '/snapshots');
+  // Log a compact summary of the board's own reported figures — the numbers we're currently
+  // seeing misbehave after the firmware update (odd storage totals, sync/state anomalies).
+  return boardFetch(ip, '/snapshots', {
+    diagnostic: (b) => {
+      if (!b || typeof b !== 'object') return null;
+      const used = Number(b.usedStorageBytes);
+      const total = Number(b.totalStorageBytes);
+      const count = Array.isArray(b.snapshots) ? b.snapshots.length : '?';
+      const mb = (n) => Number.isFinite(n) ? (n / 1048576).toFixed(1) + 'MB' : '?';
+      return `state=${b.state ?? '?'} · used=${mb(used)} · total=${mb(total)} · snapshots=${count}`
+        + (b.lastErrorMessage ? ` · lastError="${String(b.lastErrorMessage).slice(0, 80)}"` : '');
+    },
+  });
 }
 
 // The documented schema says /snapshots returns an array of UUID strings, but some
@@ -175,6 +196,12 @@ export async function setSnapshotShared(ip, snap, shared = true) {
   return boardFetch(ip, `/snapshots/${snap.uuid}`, {
     method: 'PUT',
     body: JSON.stringify(change),
+    diagnostic: (b) => {
+      // Confirm what the board echoed back for the share flag — sharing/sync is failing
+      // after the firmware update, so seeing whether the PUT actually took is useful.
+      const echoed = (b && typeof b === 'object' && 'shared' in b) ? `shared=${b.shared}` : 'no-echo';
+      return `set shared=${shared} on ${snap.name || snap.uuid} · board ${echoed}`;
+    },
   });
 }
 

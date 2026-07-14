@@ -757,10 +757,11 @@ app.get('/api/admin/cards/:cardId/reach', requireAdmin, async (req, res) => {
   }
 });
 
-// Per-card snapshot storage usage. The Neuron cards cap snapshot storage at 200 MB, so
-// percentage is computed against that fixed ceiling (the board's own totalStorageBytes is
-// passed through too, but 200 MB is the authoritative denominator per the hardware spec).
-const STORAGE_MAX_BYTES = 200 * 1024 * 1024;
+// Per-card snapshot storage usage. Post-firmware the boards report their own total, which
+// changed (and no longer matches the old fixed 200 MB assumption), so we trust the board's
+// numbers: percentage is computed against the board-reported total ONLY when the board
+// actually reports a usable total (> 0). If it doesn't, we return the used bytes alone with
+// no percentage and no invented denominator, rather than showing a misleading figure.
 app.get('/api/admin/cards/:cardId/storage', requireAdmin, async (req, res) => {
   const config = await loadConfig();
   const card = getCardById(config, req.params.cardId);
@@ -768,10 +769,20 @@ app.get('/api/admin/cards/:cardId/storage', requireAdmin, async (req, res) => {
   if (!card.ip) return res.json({ ok: false, error: 'No IP set for this card' });
   try {
     const info = await getSnapshotInfo(card.ip);
-    const used = Number(info?.usedStorageBytes) || 0;
-    const boardTotal = Number(info?.totalStorageBytes) || 0;
-    const percent = Math.min(100, Math.round((used / STORAGE_MAX_BYTES) * 100));
-    res.json({ ok: true, usedBytes: used, maxBytes: STORAGE_MAX_BYTES, boardTotalBytes: boardTotal, percent });
+    const used = Number(info?.usedStorageBytes);
+    const boardTotal = Number(info?.totalStorageBytes);
+    const hasUsed = Number.isFinite(used);
+    const hasTotal = Number.isFinite(boardTotal) && boardTotal > 0;
+    const percent = (hasUsed && hasTotal) ? Math.round((used / boardTotal) * 100) : null;
+    res.json({
+      ok: true,
+      usedBytes: hasUsed ? used : null,
+      totalBytes: hasTotal ? boardTotal : null,  // board-reported; null if not reported
+      percent,                                     // null when total is unknown
+      // Surface the raw board state string too — useful now that the boards are misbehaving
+      // (e.g. 'syncing snapshots', 'not enough storage space').
+      state: typeof info?.state === 'string' ? info.state : null,
+    });
   } catch (e) {
     res.json({ ok: false, error: e.code || e.message, detail: e.detail || null });
   }

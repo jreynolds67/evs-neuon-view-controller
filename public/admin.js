@@ -101,9 +101,11 @@ function renderCards() {
   if (typeof loadAllStorage === 'function') loadAllStorage();
 }
 
-// Fetch and render snapshot-storage usage for every card with an IP. Percentage is against
-// the cards' 200 MB ceiling; the bar turns amber past 75% and red past 90% — the documented
-// danger zone where the storage layer can misbehave if overfilled.
+// Fetch and render snapshot-storage usage for every card with an IP. Post-firmware the boards
+// report their own total (which changed), so the percentage is against the BOARD-REPORTED
+// total — shown only when the board reports one. When it doesn't, we show the used amount
+// alone (no invented denominator). Bar turns amber past 75% and red past 90%. The board's raw
+// state string is surfaced too, since the boards are misbehaving after the update.
 async function loadAllStorage() {
   for (const c of config.cards) {
     if (!c.id) continue;
@@ -115,14 +117,31 @@ async function loadAllStorage() {
       const r = await fetch(`/api/admin/cards/${encodeURIComponent(c.id)}/storage`, { headers: headers() });
       const d = await r.json();
       if (!d.ok) { slot.innerHTML = `<span class="stor-err" title="${esc(d.detail || d.error || 'error')}">unreachable</span>`; continue; }
-      const pct = d.percent;
-      const level = pct >= 90 ? 'crit' : pct >= 75 ? 'warn' : 'ok';
-      const usedMB = (d.usedBytes / (1024 * 1024)).toFixed(1);
-      slot.innerHTML = `
-        <div class="stor-bar" title="${usedMB} MB of 200 MB used">
-          <div class="stor-fill ${level}" style="width:${pct}%"></div>
-        </div>
-        <span class="stor-pct ${level}">${pct}%</span>`;
+
+      const mb = (b) => (b / (1024 * 1024)).toFixed(1);
+      const usedMB = d.usedBytes != null ? mb(d.usedBytes) : '?';
+      // Show the board's state when it's anything other than plain idle — highlights the
+      // odd post-firmware states (syncing, 'not enough storage space', etc.).
+      const stateNote = (d.state && d.state !== 'idle')
+        ? ` · <span class="stor-anom" title="Board state">${esc(d.state)}</span>` : '';
+
+      if (d.percent != null && d.totalBytes != null) {
+        // Board reported a usable total — show the bar + percentage against it.
+        const pct = d.percent;
+        const level = pct >= 90 ? 'crit' : pct >= 75 ? 'warn' : 'ok';
+        const totalMB = mb(d.totalBytes);
+        slot.innerHTML = `
+          <div class="stor-bar" title="${usedMB} MB of ${totalMB} MB used (${pct}%) — total reported by board">
+            <div class="stor-fill ${level}" style="width:${Math.min(100, pct)}%"></div>
+          </div>
+          <span class="stor-pct ${level}">${pct}%</span>
+          <span class="stor-bytes muted">${usedMB} / ${totalMB} MB${stateNote}</span>`;
+      } else {
+        // No total reported by the board — show used bytes alone, no percentage, no bar fill.
+        slot.innerHTML = `
+          <span class="stor-bytes muted" title="Board did not report a total capacity">${usedMB} MB used`
+          + ` · <span class="stor-anom" title="The board did not report a total capacity">total not reported</span>${stateNote}</span>`;
+      }
     } catch (e) {
       slot.innerHTML = `<span class="stor-err">error</span>`;
     }
@@ -1312,7 +1331,7 @@ async function refreshLog(reset = false) {
         <td class="mono" style="font-size:12px">${esc((e.ip || '') + (e.path || ''))}</td>
         <td class="mono" style="color:${statusColor}">${esc(statusTxt)}</td>
         <td class="mono">${e.durationMs ?? ''}</td>
-        <td style="font-size:12px;color:var(--ink-dim)">${esc((e.detail || e.error || '').toString().slice(0,160))}</td>`;
+        <td style="font-size:12px;color:var(--ink-dim)" title="${esc((e.detail || e.error || '').toString())}">${esc((e.detail || e.error || '').toString().slice(0,300))}</td>`;
       tb.prepend(tr); // newest on top
     });
     // Trim DOM to 200 rows
