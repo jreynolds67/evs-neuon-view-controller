@@ -53,10 +53,17 @@ async function boardFetch(ip, path, options = {}) {
   const url = `${boardBase(ip)}${path}`;
   const started = Date.now();
   const raw = options.raw === true;
+  // quiet404: suppress the activity-log entry for a 404 specifically. Used by capability
+  // probes against endpoints that older firmware legitimately lacks (e.g. /storage/status on
+  // API 1.10) — those 404s are expected and handled by fallback, and logging each one fills
+  // the admin log with red ERR entries that look like a problem. Any OTHER failure (timeout,
+  // 500, …) on the same call is still logged: those ARE interesting.
+  const quiet404 = options.quiet404 === true;
   const opts = { ...options };
   delete opts.raw;
   delete opts.diagnostic;
   delete opts.timeoutMs;
+  delete opts.quiet404;
   try {
     const res = await fetch(url, {
       ...opts,
@@ -70,8 +77,10 @@ async function boardFetch(ip, path, options = {}) {
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      log({ ip, path, method, url, status: res.status, durationMs, ok: false,
-        error: `HTTP ${res.status}`, detail: text.slice(0, 300) });
+      if (!(quiet404 && res.status === 404)) {
+        log({ ip, path, method, url, status: res.status, durationMs, ok: false,
+          error: `HTTP ${res.status}`, detail: text.slice(0, 300) });
+      }
       const err = new Error(`Board ${ip} ${path} -> ${res.status}`);
       err.status = res.status;
       err.body = text;
@@ -163,8 +172,11 @@ export async function triggerStorageSync(ip) {
 // out of /v1/snapshots. Returns a normalised shape merging both firmware layouts:
 //   { activity, syncState, syncMessage, tasks }  (fields absent on a given firmware => null)
 // On older firmware that lacks /v1/storage/status this 404s; callers treat that as "unknown".
+// The 404 is an expected capability probe result (it fires on every busy-state read against a
+// 1.10 board), so it is NOT logged — anything else (timeout, 500) still is.
 export async function getStorageStatus(ip) {
   const s = await boardFetch(ip, '/storage/status', {
+    quiet404: true,
     diagnostic: (b) => {
       if (!b || typeof b !== 'object') return null;
       const sync = b.sync || {};

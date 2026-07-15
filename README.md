@@ -103,7 +103,8 @@ The admin page (`/admin.html`, login-gated) has four tabs:
 - **Backups & sharing** — scheduled daily backups (dual output: a whole-board archive plus
   a per-snapshot ZIP) and the auto-share sweep.
 - **Setup** — the card definitions (id / label / board IP) with an inline **storage
-  readout** per card (used vs. the 200 MB ceiling, amber at 75%, red at 90%), plus a live
+  readout** per card (used vs. the board-reported capacity — ~500 MB ceiling — amber at 75%,
+  red at 90%), plus a live
   board-activity log.
 
 ## The partials-only guarantee
@@ -317,7 +318,7 @@ There is no build step — the frontend is plain HTML/CSS/JS served straight fro
   name to be selectable (an unnamed head is skipped — that's expected). The API spec doesn't
   formally document that blob, so if heads aren't enumerated correctly on your firmware, the
   parser in `server/board.js` is the one place to adjust.
-- **Storage ceiling.** Neuron cards cap snapshot storage at ~200 MB and can corrupt their
+- **Storage ceiling.** Neuron cards cap snapshot storage at ~500 MB and can corrupt their
   storage layer if overfilled. The Setup tab shows per-card usage against that ceiling; keep
   an eye on cards trending toward the red threshold.
 - **Full board restore drifts UUIDs.** A full restore from the native GUI replaces heads

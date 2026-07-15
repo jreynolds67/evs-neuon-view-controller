@@ -181,14 +181,14 @@ const cardSnapsCache = new Map();   // cardId -> [{uuid,name}]
 
 async function probeCardHeads(cardId) {
   if (cardHeadsCache.has(cardId)) return cardHeadsCache.get(cardId);
-  const heads = await fetch(`/api/admin/cards/${cardId}/heads`, { headers: headers() }).then(r => r.json());
+  const heads = await fetch(`/api/admin/cards/${encodeURIComponent(cardId)}/heads`, { headers: headers() }).then(r => r.json());
   const list = Array.isArray(heads) ? heads : [];
   cardHeadsCache.set(cardId, list);
   return list;
 }
 async function probeCardSnaps(cardId) {
   if (cardSnapsCache.has(cardId)) return cardSnapsCache.get(cardId);
-  const snaps = await fetch(`/api/admin/cards/${cardId}/snapshots`, { headers: headers() }).then(r => r.json());
+  const snaps = await fetch(`/api/admin/cards/${encodeURIComponent(cardId)}/snapshots`, { headers: headers() }).then(r => r.json());
   const list = Array.isArray(snaps) ? snaps : [];
   cardSnapsCache.set(cardId, list);
   return list;
@@ -1373,7 +1373,7 @@ function renderReachRow() {
     b.addEventListener('click', async () => {
       b.textContent = `Testing ${c.label || c.id}…`;
       try {
-        const res = await fetch(`/api/admin/cards/${c.id}/reach`, { headers: headers() });
+        const res = await fetch(`/api/admin/cards/${encodeURIComponent(c.id)}/reach`, { headers: headers() });
         const r = await res.json();
         if (r.ok) toast(`${c.label}: reachable (${r.product || 'OK'} ${r.version || ''}, ${r.durationMs}ms)`, 'ok');
         else toast(`${c.label}: ${r.error}${r.detail ? ' — ' + r.detail : ''}`, 'err');
@@ -1419,7 +1419,7 @@ async function runSyncDiag(card, append = false) {
   box.innerHTML = `<div class="syncdiag-title">${esc(card.label || card.id)} — checking…</div>`;
   out.appendChild(box);
   try {
-    const d = await fetch(`/api/admin/cards/${card.id}/sync-diagnostics`, { headers: headers() }).then(r => r.json());
+    const d = await fetch(`/api/admin/cards/${encodeURIComponent(card.id)}/sync-diagnostics`, { headers: headers() }).then(r => r.json());
     if (!d.ok) { box.innerHTML = `<div class="syncdiag-title">${esc(card.label || card.id)}</div><div class="stor-err">${esc(d.error || 'error')}</div>`; return; }
 
     const sc = d.syncConfig || {};
@@ -1427,7 +1427,7 @@ async function runSyncDiag(card, append = false) {
     const activityBad = d.activity && /fail/i.test(d.activity);
     const fl = d.snapshotFlags || {};
     const rows = [];
-    rows.push(`<tr><td>Sync enabled</td><td>${sc.enabled === true ? 'yes' : sc.enabled === false ? 'no' : '?'}${sc.target ? ' → ' + esc(String(sc.target)) : ''}${sc.intervalSeconds ? ' · every ' + sc.intervalSeconds + 's' : ''}</td></tr>`);
+    rows.push(`<tr><td>Sync enabled</td><td>${sc.enabled === true ? 'yes' : sc.enabled === false ? 'no' : '?'}${sc.target ? ' → ' + esc(String(sc.target)) : ''}${sc.intervalSeconds ? ' · every ' + esc(String(sc.intervalSeconds)) + 's' : ''}</td></tr>`);
     rows.push(`<tr><td>Activity</td><td class="${activityBad ? 'stor-err' : ''}">${esc(d.activity || '—')}</td></tr>`);
     rows.push(`<tr><td>Sync state</td><td class="${syncBad ? 'stor-err' : ''}">${esc(d.syncState || '—')}${d.syncMessage ? ' · ' + esc(d.syncMessage) : ''}</td></tr>`);
     if (fl.total != null) {
@@ -1448,7 +1448,7 @@ async function runSyncDiag(card, append = false) {
       const btn = ev.target; const msg = box.querySelector('.syncdiag-trigmsg');
       btn.disabled = true; msg.textContent = 'Triggering…';
       try {
-        const r = await fetch(`/api/admin/cards/${card.id}/sync-trigger`, { method: 'POST', headers: headers() }).then(x => x.json());
+        const r = await fetch(`/api/admin/cards/${encodeURIComponent(card.id)}/sync-trigger`, { method: 'POST', headers: headers() }).then(x => x.json());
         msg.textContent = r.ok ? `activity=${r.activity || '?'} · sync=${r.syncState || '?'}${r.syncMessage ? ' · ' + r.syncMessage : ''}` : `Error: ${r.error || 'failed'}`;
       } catch (e) { msg.textContent = 'Error: ' + e.message; }
       btn.disabled = false;
@@ -1594,7 +1594,7 @@ function renderBackupFiles(files) {
       <td>${cell(r.board)}</td>
       <td>${cell(r.zip)}</td>
       <td>${cell(r.config)}</td>`;
-    tr.querySelectorAll('.bk-del').forEach((btn) => {
+    tr.querySelectorAll('button[data-file]').forEach((btn) => {
       btn.addEventListener('click', () => deleteBackup(btn.getAttribute('data-file')));
     });
     tb.appendChild(tr);
