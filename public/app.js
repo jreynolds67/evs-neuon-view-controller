@@ -177,7 +177,7 @@ async function loadPreviewInto(container, url, { quiet = false } = {}) {
     if (data.resolved === false) {
       const note = document.createElement('div');
       note.className = 'preview-note';
-      note.textContent = 'Snapshot layout could not be fully read on this board.';
+      note.textContent = 'Preview only partly loaded — you can still load this snapshot.';
       next.appendChild(note);
     }
     container.replaceChildren(next); // atomic swap — no intermediate empty state
@@ -190,9 +190,9 @@ async function loadPreviewInto(container, url, { quiet = false } = {}) {
         // The head's board UUID changed (typically a board software update). Show a clear,
         // non-technical explanation in the tile instead of a raw board error.
         container.innerHTML = '<div class="preview-note stale">'
-          + '<strong>Head ID changed on the board</strong>'
-          + '<span>This usually happens after a board software update. '
-          + 'Ask an administrator to open Settings and use “Re-link heads by name.”</span>'
+          + '<strong>Head UUID changed</strong>'
+          + '<span>Use the “Re-link heads by name” function in the '
+          + 'admin page to correct it.</span>'
           + '</div>';
       } else {
         const n = document.createElement('div');
@@ -320,7 +320,7 @@ async function renderSnapshots() {
     if (navStale(token)) return; // operator navigated away during the fetch
     grid.innerHTML = '';
     if (boardState && boardState !== 'idle') {
-      toast(`Board is busy: ${boardState}`, 'err');
+      toast(`Card is busy (${boardState}) — wait a moment and try loading again.`, 'err');
     }
 
     // "Show all" control lives in the footer action bar (centered), not in the snapshot
@@ -330,7 +330,7 @@ async function renderSnapshots() {
     if (!snapshots.length) {
       const note = document.createElement('div');
       note.className = 'empty-note';
-      note.textContent = 'No snapshots available for this head.';
+      note.textContent = 'No snapshots are available for this head. If you expected some, ask an engineer to allow them for this head.';
       grid.appendChild(note);
       return;
     }
@@ -381,7 +381,7 @@ async function pickSnapshot(s) {
     }
     // Could not parse heads from the snapshot model — do NOT guess. Guessing risks
     // mapping the wrong head, and we never fall back to a full restore.
-    toast('Cannot read heads from this snapshot on this board. Restore blocked for safety.', 'err');
+    toast('Couldn’t read this snapshot’s heads on the card, so loading is blocked for safety. Try another snapshot, or ask an engineer to check it.', 'err');
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -477,13 +477,20 @@ async function fire() {
     if (e.code === 'BOARD_BUSY' || e.code === 'HEAD_STALE') {
       // Both are clean failures where nothing was applied: BOARD_BUSY means the board was
       // mid-operation (safe to retry shortly); HEAD_STALE means the target head's ID drifted
-      // and the board rejected an unknown head. Show the clear message without the "may have
-      // partially applied" warning, which only fits an ambiguous mid-restore error.
+      // and the board rejected an unknown head. Each message already names its own next step.
       toast(e.message, 'err');
     } else {
-      // Any other failure: the restore MAY have partially applied on the board, so tell the
-      // operator to verify rather than implying a clean failure that invites a blind re-fire.
-      toast(`${e.message} — the load may not have completed. Check the head before retrying.`, 'err');
+      // Two genuinely different states, so two messages. A per-head restore is synchronous
+      // (the board applies it, THEN returns 200) and this app only ever restores ONE head, so
+      // there is no "partial" outcome — it's all-or-nothing:
+      //  • No confirmation (timeout / unreachable / 5xx): we never got the 200, but a lost
+      //    response isn't a lost action — the board may have fully applied it or not at all.
+      //    Genuinely ambiguous, so the operator must verify.
+      //  • Rejected (4xx): the board refused the command before applying it, so nothing changed.
+      const msg = (e.status >= 500 || !e.status)
+        ? 'The card didn’t confirm the restore — it may or may not have applied. Please manually confirm the restore worked, or try again.'
+        : 'The card rejected the restore, so nothing changed. Please try again.';
+      toast(msg, 'err');
     }
   } finally {
     fireBtn.disabled = false; fireBtn.textContent = 'Load snapshot';
@@ -516,10 +523,10 @@ let bkDismissedAt = null;
 function bkFailureText(failure) {
   const when = failure.at ? new Date(failure.at).toLocaleString() : 'recently';
   if (failure.reason === 'empty') {
-    return `Scheduled snapshot backup at ${when} found no snapshots on the board to back up.`;
+    return `Scheduled snapshot backup at ${when} found no snapshots to back up — tell an engineer to check the backup settings.`;
   }
   // export / target / generic error all read as a backup failure to the operator.
-  return `Scheduled snapshot backup failed at ${when}.`;
+  return `Scheduled snapshot backup failed at ${when} — tell an engineer to check the backup settings.`;
 }
 
 function renderBkBanner(failure) {
@@ -782,9 +789,9 @@ function createFsWindow(wd) {
     win.classList.remove('editing');
     if (raw === '') return; // no change
     const num = parseInt(raw, 10);
-    if (Number.isNaN(num)) { toast('Enter a number', 'err'); return; }
+    if (Number.isNaN(num)) { toast('Enter an input number, then press Enter.', 'err'); return; }
     const target = groupByNumber(num);
-    if (!target) { toast(`No input group numbered ${num} on this card`, 'err'); return; }
+    if (!target) { toast(`No input group numbered ${num} on this card — check the number and try again.`, 'err'); return; }
     try {
       await api(`/api/panel/cards/${fsState.head.cardId}/heads/${fsState.head.headUuid}/widgets/${wd.uuid}/group`, {
         method: 'POST',
@@ -886,7 +893,7 @@ async function boot() {
     $('panelSub').textContent = clientIp
       ? `${clientIp} — not registered`
       : 'This panel is not registered.';
-    showEmpty(`${e.message}. Add this panel's IP in the admin page.`);
+    showEmpty(`${e.message}. Ask an engineer to add this panel’s IP (shown below) in the admin page.`);
   }
 }
 // Open the control socket immediately at script load — BEFORE boot() and outside its

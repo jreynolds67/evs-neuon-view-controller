@@ -113,8 +113,8 @@ function sendPanelErr(res, e) {
   }
   // Generic, non-leaking message for anything board-originated.
   const generic = status >= 500 || !e.status
-    ? 'The multiviewer card did not respond as expected. Please try again.'
-    : 'That request could not be completed on the multiviewer card.';
+    ? 'The card didn’t respond as expected. Please try again — if it keeps happening, tell an engineer.'
+    : 'The card couldn’t complete that request. Please try again — if it keeps happening, tell an engineer.';
   res.status(status).json({ error: generic, code: e.code || null });
 }
 
@@ -132,11 +132,11 @@ async function resolveHeadRequest(req, res) {
   const panel = getPanelByIp(config, clientIp(req));
   const { cardId, headUuid } = req.params;
   if (!panel || !panelAuthorizesHead(panel, cardId, headUuid)) {
-    res.status(403).json({ error: 'Head not permitted for this panel' });
+    res.status(403).json({ error: 'This head is no longer assigned to this panel — go back and pick another, or ask an engineer.' });
     return null;
   }
   const card = getCardById(config, cardId);
-  if (!card) { res.status(404).json({ error: 'Unknown card' }); return null; }
+  if (!card) { res.status(404).json({ error: 'That card is no longer available — go back and try again, or ask an engineer.' }); return null; }
   return { config, panel, card, panelHead: getPanelHead(panel, cardId, headUuid) };
 }
 
@@ -148,11 +148,11 @@ async function resolveCardRequest(req, res) {
   const { cardId } = req.params;
   const hasHeadOnCard = panel && (panel.heads || []).some((h) => h.cardId === cardId);
   if (!hasHeadOnCard) {
-    res.status(403).json({ error: 'Card not permitted for this panel' });
+    res.status(403).json({ error: 'This card is no longer available to this panel — go back and try again, or ask an engineer.' });
     return null;
   }
   const card = getCardById(config, cardId);
-  if (!card) { res.status(404).json({ error: 'Unknown card' }); return null; }
+  if (!card) { res.status(404).json({ error: 'That card is no longer available — go back and try again, or ask an engineer.' }); return null; }
   return { config, panel, card };
 }
 
@@ -352,8 +352,7 @@ setInterval(() => { previewCache.prune(30000); groupsCache.prune(30000); headsCa
 // goes through headsCache so N panels polling a faulting card collapse into one getHeads per
 // TTL (and one per negative window while it keeps failing) instead of one per request.
 const HEAD_STALE_MESSAGE =
-  'This head’s ID changed on the board (usually after a board software update). '
-  + 'An administrator needs to re-link heads by name in the settings page.';
+  'Head UUID changed — use the “Re-link heads by name” function in the admin page to correct it.';
 async function headIsStale(cardIp, headUuid, err) {
   if (err && err.code) return false; // transport failure — can't tell; don't claim stale
   try {
@@ -509,15 +508,15 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
   // Authorize against the exact assigned head being restored onto.
   const panelHead = panel ? getPanelHead(panel, req.params.cardId, targetHeadUuid) : null;
   if (!panelHead) {
-    return res.status(403).json({ error: 'Head not permitted for this panel' });
+    return res.status(403).json({ error: 'This head is no longer assigned to this panel — go back and pick another, or ask an engineer.' });
   }
   const card = getCardById(config, req.params.cardId);
-  if (!card) return res.status(404).json({ error: 'Unknown card' });
+  if (!card) return res.status(404).json({ error: 'That card is no longer available — go back and try again, or ask an engineer.' });
 
   // Re-check the snapshot is actually permitted for this head before firing.
   const allow = resolveAllowedSnapshots(config, panelHead, req.params.cardId, targetHeadUuid);
   if (allow && !allow.includes(req.params.snapUuid)) {
-    return res.status(403).json({ error: 'Snapshot not permitted for this head on this panel' });
+    return res.status(403).json({ error: 'This snapshot isn’t allowed for this head — go back and pick another, or ask an engineer to allow it.' });
   }
 
   try {
@@ -532,7 +531,7 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
     try {
       const busy = await readBoardBusyState(card.ip);
       if (busy) {
-        return res.status(409).json({ error: `Board is busy (${busy}). Please wait a moment and try again.`, code: 'BOARD_BUSY' });
+        return res.status(409).json({ error: `The card is busy (${busy}) — please wait a moment and try again.`, code: 'BOARD_BUSY' });
       }
     } catch { /* state read failed — proceed; the restore itself will surface any real error */ }
 
