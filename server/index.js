@@ -356,13 +356,17 @@ app.get('/api/panel/cards/:cardId/heads/:headUuid/groups', async (req, res) => {
     // Groups are per-card (not per-head), so key by IP — every head on a card shares one
     // cached result, further cutting board fetches.
     const groups = await groupsCache.get(card.ip, () => getInputGroups(card.ip));
+    // API 1.13 renamed the group stream references from singular (videoUuid) to plural arrays
+    // (videoUuids) and added audioChannelMapping. Read either shape so we work on both
+    // firmwares. These are pass-through metadata; group selection uses uuid/name/number.
+    const first = (arr) => (Array.isArray(arr) && arr.length ? arr[0] : '');
     const out = (groups || []).map((g) => ({
       uuid: g.uuid,
       name: g.name || '',
       number: groupNumber(g),
-      videoUuid: g.videoUuid || '',
-      audioUuid: g.audioUuid || '',
-      dataUuid: g.dataUuid || '',
+      videoUuid: g.videoUuid || first(g.videoUuids),
+      audioUuid: g.audioUuid || first(g.audioUuids),
+      dataUuid: g.dataUuid || first(g.dataUuids),
     }));
     res.json({ groups: out });
   } catch (e) { sendErr(res, e); }

@@ -122,8 +122,7 @@ async function loadAllStorage() {
       const mb = (b) => (b / (1024 * 1024)).toFixed(1);
       const usedMB = d.usedBytes != null ? mb(d.usedBytes) : '?';
       // Show the board's activity/state when it's anything other than plain idle, and flag a
-      // failed/active sync prominently (the post-firmware failures show up here).
-      const stateBad = d.state && /fail|error|not enough/i.test(d.state);
+      // failed sync prominently (the post-firmware failures show up here).
       const syncBad = d.syncState && /fail/i.test(d.syncState);
       const notes = [];
       if (d.state && d.state !== 'idle') notes.push(`<span class="stor-anom" title="Board activity">${esc(d.state)}</span>`);
@@ -142,9 +141,12 @@ async function loadAllStorage() {
           <span class="stor-pct ${level}">${pct}%</span>
           <span class="stor-bytes muted">${usedMB} / ${totalMB} MB${stateNote}</span>`;
       } else {
-        // No total reported by the board — show used bytes alone, no percentage, no bar fill.
+        // No total reported by the board — no percentage is possible. Keep the same row shape
+        // (empty bar + dash) so this row still lines up with the others in the table.
         slot.innerHTML = `
-          <span class="stor-bytes muted" title="Board did not report a total capacity">${usedMB} MB used`
+          <div class="stor-bar" title="Board did not report a total capacity"></div>
+          <span class="stor-pct muted">—</span>
+          <span class="stor-bytes muted">${usedMB} MB used`
           + ` · <span class="stor-anom" title="The board did not report a total capacity">total not reported</span>${stateNote}</span>`;
       }
     } catch (e) {
