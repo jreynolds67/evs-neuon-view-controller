@@ -55,7 +55,18 @@ export async function loadConfig() {
     (cache.panels || []).forEach(migratePanel);
     // Discard obsolete per-panel snapshot filters — filtering is global per head now.
     (cache.panels || []).forEach((p) => (p.heads || []).forEach((h) => { delete h.allowedSnapshots; }));
-  } catch {
+  } catch (e) {
+    // A missing file is normal on first boot. ANY other failure (malformed JSON, bad
+    // permissions) means we're about to boot with an EMPTY config — every panel suddenly
+    // "unregistered" and admin login dead. That must never be silent: without a log line,
+    // the symptom points nowhere near the cause.
+    if (e && e.code === 'ENOENT') {
+      console.log(`Config file not found at ${CONFIG_PATH} — starting with defaults.`);
+    } else {
+      console.error(`[config] FAILED TO LOAD ${CONFIG_PATH}: ${e && e.message}`);
+      console.error('[config] Starting with an EMPTY default config — all panels will be '
+        + 'unregistered and admin login will be unavailable until this file is valid.');
+    }
     cache = defaultConfig();
   }
   return cache;

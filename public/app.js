@@ -431,7 +431,11 @@ function renderSourceHeads(heads) {
     .catch((e) => {
       if (navStale(token)) return;
       previewSlots.forEach((slot) => {
-        slot.innerHTML = `<div class="preview-note err">${e.message}</div>`;
+        // Board-originated text can reach e.message — never interpolate it into HTML.
+        const n = document.createElement('div');
+        n.className = 'preview-note err';
+        n.textContent = e.message;
+        slot.replaceChildren(n);
       });
     });
 }
@@ -629,7 +633,12 @@ async function openFullscreen(head) {
     renderFullscreen();
     startFullscreenPolling(); // keep the enlarged view live to recalls from other panels
   } catch (e) {
-    $('fsBody').innerHTML = `<div class="preview-note err" style="padding:40px">${e.message}</div>`;
+    // Board-originated text can reach e.message — never interpolate it into HTML.
+    const n = document.createElement('div');
+    n.className = 'preview-note err';
+    n.style.padding = '40px';
+    n.textContent = e.message;
+    $('fsBody').replaceChildren(n);
   }
 }
 

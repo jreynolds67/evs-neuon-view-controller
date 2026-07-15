@@ -40,11 +40,19 @@ async function sweepOnce() {
       try { info = await getSnapshotInfo(t.ip); } catch { continue; }
       const entries = (info.snapshots || [])
         .map(normalizeSnapshotEntry)
-        .filter((e) => e.uuid && e.deleted !== true);
+        // Skip read-only snapshots: 1.13 marks some snapshots readOnly, and a metadata PUT
+        // against one will just be rejected — retrying it every cycle forever is pointless
+        // load on a storage layer we know is fragile.
+        .filter((e) => e.uuid && e.deleted !== true && e.readOnly !== true);
       for (const e of entries) {
         checked++;
         if (e.shared === true) continue;
         try { await setSnapshotShared(t.ip, e, true); shared++; } catch {}
+        // Pace the writes. On 1.13 the metadata PUT is async (202) and puts the board into
+        // 'updating-file'; firing them back-to-back stacks writes onto a board still
+        // processing the previous one. A small gap costs nothing (this is a background
+        // sweep) and keeps load off the storage layer.
+        await new Promise((r) => setTimeout(r, 250));
       }
     }
     status.lastRun = Date.now();

@@ -11,7 +11,13 @@
 import { Agent } from 'undici';
 import { log, describeError } from './logger.js';
 
+// Default timeout for ordinary board API calls (small JSON reads/writes).
 const API_TIMEOUT_MS = 8000;
+// Whole-board snapshot exports stream up to the card's full storage (hundreds of MB) and can
+// take far longer than a normal API call. They get their own generous timeout — otherwise
+// backups start failing on storage growth alone, silently degrading to per-folder attempts
+// that hit the same wall. Override with BOARD_EXPORT_TIMEOUT_MS if a site needs longer.
+const EXPORT_TIMEOUT_MS = parseInt(process.env.BOARD_EXPORT_TIMEOUT_MS, 10) || 10 * 60 * 1000;
 
 // Configurable so this adapts if a site fronts the boards differently.
 //   BOARD_SCHEME  : "https" (default) or "http"
@@ -41,7 +47,8 @@ function boardBase(ip) {
 
 async function boardFetch(ip, path, options = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const timeoutMs = options.timeoutMs || API_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const method = (options.method || 'GET').toUpperCase();
   const url = `${boardBase(ip)}${path}`;
   const started = Date.now();
@@ -49,6 +56,7 @@ async function boardFetch(ip, path, options = {}) {
   const opts = { ...options };
   delete opts.raw;
   delete opts.diagnostic;
+  delete opts.timeoutMs;
   try {
     const res = await fetch(url, {
       ...opts,
@@ -138,15 +146,15 @@ export async function getSnapshotInfo(ip) {
   });
 }
 
-// Board native card-to-card sync CONFIG (API 1.13: /v1/storage/sync). Separate from this
-// app's share-sweep — this is the board replicating shared snapshots to a target on its own.
-// { enabled, intervalSeconds, target }
+// Board native card-to-card sync CONFIG (/v1/storage/sync — present in both 1.10 and 1.13).
+// Separate from this app's share-sweep — this is the board replicating shared snapshots to a
+// target on its own. { enabled, intervalSeconds, target }
 export async function getStorageSync(ip) {
   return boardFetch(ip, '/storage/sync');
 }
 
-// Manually kick the board's native sync (API 1.13: POST /v1/storage/sync/trigger). Useful to
-// force a sync and then read /storage/status to see whether/why it failed.
+// Manually kick the board's native sync (POST /v1/storage/sync/trigger — present in both 1.10
+// and 1.13). Useful to force a sync and then read /storage/status to see whether/why it failed.
 export async function triggerStorageSync(ip) {
   return boardFetch(ip, '/storage/sync/trigger', { method: 'POST' });
 }
@@ -208,10 +216,11 @@ export function normalizeSnapshotEntry(entry) {
     // Field renames across firmware (API 1.10 -> 1.13), handled compatibly so we work on both:
     //   deleted (bool)        -> deletedAt (nullable timestamp; non-null = deleted)
     //   timestamp (int)       -> createdAt / updatedAt (nullable ints)
-    // Canonical `deleted` is true if EITHER the old boolean is true OR the new deletedAt is a
-    // real (non-null) value. Canonical `timestamp` prefers the freshest available field.
+    // Canonical `deleted` is true if EITHER the old boolean is true OR the new deletedAt holds
+    // a real timestamp. Note 0 is treated as NOT deleted: it's the epoch, so a firmware using
+    // 0 as a "never deleted" sentinel must not be read as "deleted in 1970".
     const deleted = entry.deleted === true
-      || (entry.deletedAt !== undefined && entry.deletedAt !== null);
+      || (entry.deletedAt !== undefined && entry.deletedAt !== null && entry.deletedAt !== 0);
     const timestamp = entry.timestamp
       ?? entry.updatedAt ?? entry.createdAt ?? undefined;
 
@@ -247,7 +256,7 @@ export async function getSnapshotMeta(ip, uuid) {
     //   deleted   <- deleted(bool) | (deletedAt != null)
     const canonTimestamp = m.timestamp ?? m.updatedAt ?? m.createdAt ?? 0;
     const canonDeleted = m.deleted === true
-      || (m.deletedAt !== undefined && m.deletedAt !== null);
+      || (m.deletedAt !== undefined && m.deletedAt !== null && m.deletedAt !== 0);
     m._legacy = {
       deleted: 'deleted' in m ? m.deleted : undefined,
       timestamp: 'timestamp' in m ? m.timestamp : undefined,
@@ -268,10 +277,31 @@ export async function getSnapshotMeta(ip, uuid) {
 // way a strict 1.13 board isn't sent fields it no longer recognises — a likely cause of the
 // post-upgrade share/sync failures — while a 1.10 board still gets its required fields.
 export async function setSnapshotShared(ip, snap, shared = true) {
+  // SAFETY: this is a full-object PUT — every field we send REPLACES what's on the board.
+  // The published spec says GET /snapshots returns bare UUID strings; our firmware happens to
+  // return rich objects, which is the only reason name/path are populated here. If a snapshot
+  // reaches us without inline metadata, building the body from `snap.name || ''` would rename
+  // it to an empty string and move it out of its folder. So: if the entry lacks inline
+  // metadata, fetch the real metadata first, and refuse outright rather than PUT a blank name.
+  let meta = snap;
+  if (snap.inlineMeta === false || snap.name === undefined || snap.name === null) {
+    meta = await getSnapshotMeta(ip, snap.uuid);
+  }
+  if (!meta || typeof meta.name !== 'string' || meta.name === '') {
+    const err = new Error(`Refusing to update snapshot ${snap.uuid}: no name in metadata `
+      + '(a full-object PUT would blank it). Board returned incomplete metadata.');
+    err.code = 'META_INCOMPLETE';
+    log({
+      ip, method: 'GUARD', path: `/snapshots/${snap.uuid}`, status: null, ok: false,
+      detail: 'refused metadata PUT — snapshot metadata has no name; would have blanked it',
+    });
+    throw err;
+  }
+
   const change = {
-    description: snap.description || '',
-    name: snap.name || '',
-    path: snap.path || '',
+    description: meta.description || '',
+    name: meta.name,
+    path: meta.path || '',
     shared,
     uuid: snap.uuid,
   };
@@ -279,7 +309,7 @@ export async function setSnapshotShared(ip, snap, shared = true) {
   // normalized entry (or a getSnapshotMeta result) records original presence in `_legacy`;
   // fall back to the object itself for anything constructed elsewhere. On 1.13 these are all
   // undefined, so nothing legacy is sent.
-  const legacy = snap._legacy || snap;
+  const legacy = meta._legacy || meta;
   if (legacy.deleted !== undefined) change.deleted = legacy.deleted === true;
   if (legacy.timestamp !== undefined && legacy.timestamp !== null) change.timestamp = legacy.timestamp;
   if (legacy.type !== undefined) change.type = legacy.type;
@@ -313,6 +343,8 @@ export async function exportSnapshots(ip, { pathWildcard, snapshots } = {}) {
     method: 'POST',
     body: JSON.stringify(payload),
     raw: true,
+    // A whole-board export can be hundreds of MB — never the 8s default.
+    timeoutMs: EXPORT_TIMEOUT_MS,
   });
 }
 

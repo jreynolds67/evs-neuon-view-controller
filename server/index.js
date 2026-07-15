@@ -99,6 +99,25 @@ function sendErr(res, e) {
   res.status(status).json({ error: e.message, code: e.code || null, detail: e.detail || e.body || null });
 }
 
+// Panel-facing error sender. Board errors carry the board IP and path in their message
+// ("Board 10.x.x.x /heads/... -> 500") and the raw board response in `detail` — the documented
+// design is that board IPs stay hidden from panels, so strip both here. Errors we generate
+// ourselves (with an explicit `code`) are already operator-safe and pass through, since they
+// are the clear messages the UI is built around (HEAD_STALE, BOARD_BUSY, RECALLED, ...).
+// The full error is still logged server-side and shown on the admin activity log.
+function sendPanelErr(res, e) {
+  const status = e.status || 502;
+  const safeCodes = new Set(['HEAD_STALE', 'BOARD_BUSY', 'RECALLED', 'META_INCOMPLETE']);
+  if (e.code && safeCodes.has(e.code)) {
+    return res.status(status).json({ error: e.message, code: e.code });
+  }
+  // Generic, non-leaking message for anything board-originated.
+  const generic = status >= 500 || !e.status
+    ? 'The multiviewer card did not respond as expected. Please try again.'
+    : 'That request could not be completed on the multiviewer card.';
+  res.status(status).json({ error: generic, code: e.code || null });
+}
+
 // --- panel-facing API ------------------------------------------------------
 
 // Authorization helper: does this panel have this exact card+head assigned?
@@ -250,8 +269,13 @@ app.get('/api/panel/cards/:cardId/heads/:headUuid/snapshots', async (req, res) =
     // Sort by folder, then name, for a predictable grouped list.
     metas.sort((a, b) =>
       (a.path || '').localeCompare(b.path || '') || (a.name || '').localeCompare(b.name || ''));
-    res.json({ state: info.state, snapshots: metas });
-  } catch (e) { sendErr(res, e); }
+    // Board activity for the panel's "board busy" hint. On 1.13 info.state no longer exists
+    // (it moved to /storage/status), so read it via the compat helper rather than passing
+    // through a field that is always undefined on current firmware.
+    let boardState = null;
+    try { boardState = await readBoardBusyState(card.ip); } catch { /* non-fatal */ }
+    res.json({ state: boardState, snapshots: metas });
+  } catch (e) { sendPanelErr(res, e); }
 });
 
 // The heads stored inside a snapshot (candidates for the partial mapping source).
@@ -296,7 +320,7 @@ app.get('/api/panel/cards/:cardId/snapshots/:snapUuid/heads', async (req, res) =
     // rebuilt — the strict name/shape check in extractSnapshotHeads is the real guard against
     // junk, so no live-board filter is needed.)
     res.json({ heads, parsed: heads.length > 0 });
-  } catch (e) { sendErr(res, e); }
+  } catch (e) { sendPanelErr(res, e); }
 });
 
 // Preview: widget layout currently on a LIVE head.
@@ -336,11 +360,38 @@ app.get('/api/panel/cards/:cardId/heads/:headUuid/preview', async (req, res) => 
         });
       }
     } catch { /* couldn't reach board to check — fall through to the original error */ }
-    sendErr(res, e);
+    sendPanelErr(res, e);
   }
 });
 
-// Extract an operator-facing input NUMBER from a group. Names typically embed a number
+// Board activity states that genuinely CONFLICT with a restore. Deliberately an explicit set,
+// not a regex: 1.13's activity enum also contains terminal failure states (sync-failed,
+// import-failed, load-failed, …) which are NOT "busy" — a substring match on "sync"/"import"
+// would block restores indefinitely after any failure until the board cleared it.
+const BUSY_ACTIVITIES = new Set([
+  'loading-files', 'getting-file-preview', 'creating-file', 'updating-file',
+  'deleting-file', 'exporting-files', 'importing-file', 'syncing',
+]);
+// Legacy (API 1.10) info.state strings that mean busy. Same principle: match conflict states
+// only. 'not enough storage space' is a hard blocker rather than transient, but firing a
+// restore into it fails anyway, so surfacing it as "busy" is the clearer operator message.
+const BUSY_LEGACY_RE = /import|export|sync|creating|updating|deleting|not enough/i;
+
+// Return a human-readable busy state for a board, or null if idle/unknown.
+// API 1.13: activity lives on GET /storage/status. API 1.10: state lives on GET /snapshots.
+async function readBoardBusyState(ip) {
+  try {
+    const st = await getStorageStatus(ip);
+    if (st && typeof st.activity === 'string') {
+      return BUSY_ACTIVITIES.has(st.activity) ? st.activity : null;
+    }
+  } catch { /* endpoint absent (older firmware) or unreachable — fall back below */ }
+  const info = await getSnapshotInfo(ip);
+  const state = info && typeof info.state === 'string' && info.state !== 'idle' ? info.state : null;
+  return state && BUSY_LEGACY_RE.test(state) ? state : null;
+}
+
+
 // ("IN 12", "Input 12", "12"); we grab the first integer we find. Falls back to null.
 function groupNumber(g) {
   const m = (g && typeof g.name === 'string') ? g.name.match(/\d+/) : null;
@@ -369,7 +420,7 @@ app.get('/api/panel/cards/:cardId/heads/:headUuid/groups', async (req, res) => {
       dataUuid: g.dataUuid || first(g.dataUuids),
     }));
     res.json({ groups: out });
-  } catch (e) { sendErr(res, e); }
+  } catch (e) { sendPanelErr(res, e); }
 });
 
 // Repoint a window (widget) to a different input group. LIVE EDIT to the on-air board.
@@ -386,7 +437,7 @@ app.post('/api/panel/cards/:cardId/heads/:headUuid/widgets/:widgetUuid/group', a
     // the editor's own refresh) reflects it immediately rather than serving a stale ~3.5s copy.
     previewCache.invalidate(`${card.ip}::${req.params.headUuid}`);
     res.json({ ok: true, result });
-  } catch (e) { sendErr(res, e); }
+  } catch (e) { sendPanelErr(res, e); }
 });
 
 // Preview: widget layout stored for a head INSIDE a snapshot.
@@ -399,7 +450,7 @@ app.get('/api/panel/cards/:cardId/snapshots/:snapUuid/heads/:headUuid/preview', 
     const { headWidgets } = buildSnapshotWidgetIndex(root);
     const widgets = headWidgets.get(req.params.headUuid) || [];
     res.json({ widgets, resolved: widgets.length > 0 });
-  } catch (e) { sendErr(res, e); }
+  } catch (e) { sendPanelErr(res, e); }
 });
 
 // Preview (batched): widget layouts for ALL heads in a snapshot, in one call. The Source
@@ -414,7 +465,7 @@ app.get('/api/panel/cards/:cardId/snapshots/:snapUuid/previews', async (req, res
     const byHead = {};
     for (const [uuid, widgets] of headWidgets) byHead[uuid] = widgets;
     res.json({ heads: byHead });
-  } catch (e) { sendErr(res, e); }
+  } catch (e) { sendPanelErr(res, e); }
 });
 
 // Fire the partial restore. Body: { snapshotHeadUuid, targetHeadUuid }.
@@ -443,13 +494,15 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
   try {
     // Board-busy pre-check: if the board is mid-import/sync/export, firing into it tends to
     // return a raw 400. A cheap state read lets us reject with a clear, actionable message
-    // instead. Only block on states that actually conflict with a restore; tolerate a read
-    // failure here (don't let the pre-check itself prevent a legitimate restore).
+    // instead. Tolerate a read failure here (don't let the pre-check itself prevent a
+    // legitimate restore).
+    //
+    // API 1.13 moved board activity OUT of GET /snapshots (info.state) into
+    // GET /storage/status (activity). Read the new endpoint first and fall back to the legacy
+    // field, so this works on both firmwares.
     try {
-      const info = await getSnapshotInfo(card.ip);
-      const busy = info && typeof info.state === 'string' && info.state !== 'idle' ? info.state : null;
-      const blocking = busy && /import|export|sync|creating|updating|deleting|not enough/i.test(busy);
-      if (blocking) {
+      const busy = await readBoardBusyState(card.ip);
+      if (busy) {
         return res.status(409).json({ error: `Board is busy (${busy}). Please wait a moment and try again.`, code: 'BOARD_BUSY' });
       }
     } catch { /* state read failed — proceed; the restore itself will surface any real error */ }
@@ -461,7 +514,7 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
     // content on their next poll instead of a stale copy.
     previewCache.invalidate(`${card.ip}::${targetHeadUuid}`);
     res.json({ ok: true, result });
-  } catch (e) { sendErr(res, e); }
+  } catch (e) { sendPanelErr(res, e); }
 });
 
 // --- admin auth ------------------------------------------------------------

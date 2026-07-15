@@ -253,38 +253,49 @@ base would crash the whole app at startup, not just backups).
 - **Backend change** (`server/*`, Dockerfile, compose) → rebuild the container (full stack
   redeploy), then hard-refresh panels.
 
-## Networking (macvlan)
+## Networking (ipvlan / macvlan)
 
-The container attaches directly to an existing external macvlan so it has its own LAN
+The container attaches directly to an existing external L2 network so it has its own LAN
 address, rather than being published behind the host:
 
 ```yaml
-networks:
-  companion_companion_net:
-    ipv4_address: 10.10.251.90
+services:
+  neuron-mv-control:
+    networks:
+      neuron_net:
+        ipv4_address: 10.10.251.90
+    environment:
+      PORT: "80"
 # ...
 networks:
-  companion_companion_net:
+  # Local alias -> the ACTUAL external network name. Portainer prefixes stack networks with
+  # the stack name, so a Companion stack's `companion_net` is typically `companion_companion_net`.
+  # Confirm the real name under Portainer -> Networks.
+  neuron_net:
     external: true
+    name: companion_companion_net
 ```
 
-- The network is `external: true` — it must already exist (created outside this stack).
-- On macvlan the container has its own IP and is reached directly at
-  **`10.10.251.90:8080`** — there is **no host port mapping**. If your panels were pointed at
-  a host IP on `:80` under an older bridge setup, repoint them to `10.10.251.90:8080` (or set
-  `PORT: "80"` to serve on the standard port).
+- The network is `external: true` — it must already exist (created outside this stack). The
+  compose `name:` must match the real Docker network name, which may be stack-name-prefixed.
+- The container has its own IP and is reached **directly** — there is **no host port
+  mapping**. It serves on port 80 (`PORT: "80"`), so panels point at plain
+  **`http://10.10.251.90`** (no port suffix), and the admin page is at
+  **`http://10.10.251.90/admin`**.
 - No custom hostname or MAC is pinned; Docker assigns the interface MAC automatically.
 
 ## Environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `8080` | Port the app listens on. |
+| `PORT` | `8080` (compose sets `80`) | Port the app listens on. |
+| `TZ` | (compose sets a zone) | Container timezone. Sets what the backup "time" field means and how timestamps read. Without it the container runs in UTC. |
 | `CONFIG_PATH` | `/data/config.json` | Path to the config file on the volume. |
 | `BACKUP_DIR` | `/data/backups` | Where scheduled backups are written. |
 | `BOARD_SCHEME` | `https` | `http` or `https` for the board REST API. |
 | `BOARD_PORT` | (scheme default) | Override the board API port. |
 | `BOARD_TLS_REJECT_UNAUTHORIZED` | `false` | Set `true` only if boards present a CA-trusted cert (rare on broadcast gear). |
+| `BOARD_EXPORT_TIMEOUT_MS` | `600000` (10 min) | Timeout for whole-board snapshot exports (backups). Separate from the 8s default used for ordinary API calls, since an export streams the card's full snapshot storage. |
 | `TRUST_PROXY` | (off) | Set `1` **only** if a trusted reverse proxy sits in front and sets `X-Forwarded-For`. Off by default so the header can't be forged to impersonate a panel on a flat network. |
 
 ## Local development
