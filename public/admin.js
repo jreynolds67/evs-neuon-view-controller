@@ -1548,6 +1548,7 @@ function gpWidgetRow(cardId, headUuid, w) {
     <div class="muted mono" style="font-size:12px">current: <span class="gp-cur"></span></div>
     <div class="inline" style="gap:6px; margin-top:8px; flex-wrap:wrap">
       <button class="btn sm gp-solo">Solo (full + hide others)</button>
+      <button class="btn sm ghost gp-hideothers">Hide others (keep this)</button>
       <button class="btn sm ghost gp-full">Set fullscreen (0,0,1,1)</button>
       <button class="btn sm ghost gp-hide">Hide (0,0,0,0)</button>
       <button class="btn sm ghost gp-restore" disabled>Restore size</button>
@@ -1650,7 +1651,28 @@ function gpWidgetRow(cardId, headUuid, w) {
   box.querySelector('.gp-front').addEventListener('click', () => reorder('front'));
   box.querySelector('.gp-back').addEventListener('click', () => reorder('back'));
   box.querySelector('.gp-solo').addEventListener('click', () => gpSolo(w.uuid));
+  box.querySelector('.gp-hideothers').addEventListener('click', () => gpHideOthers(w.uuid));
   return box;
+}
+
+// Hide every window EXCEPT the target, leaving the target untouched. Lets you separate the two
+// halves of Solo: hide-others first (paced, deliberate), observe, THEN fullscreen the target on
+// its own and watch whether the hidden windows come back — the behavior we're chasing.
+async function gpHideOthers(keepUuid) {
+  const { cardId, headUuid, widgets } = gpCtx;
+  if (!cardId || !headUuid || !widgets.length) return;
+  $('gpState').textContent = 'Hiding all other windows…';
+  let failed = 0;
+  for (const w of widgets) {
+    if (w.uuid === keepUuid) continue;
+    const res = await gpSetGeometry(cardId, headUuid, w.uuid, { x: 0, y: 0, width: 0, height: 0 });
+    if (!res.ok) failed++;
+  }
+  refreshLog();
+  $('gpState').textContent = failed
+    ? `Hid others with ${failed} error(s) — check the API log.`
+    : 'Others hidden (target untouched). Confirm they are gone, THEN fullscreen the target and watch whether the hidden windows reappear.';
+  gpLoadWidgets();
 }
 
 // Set the flag on the head-level "Restore all sizes" button based on whether any widget on the
