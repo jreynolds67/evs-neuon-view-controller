@@ -17,6 +17,7 @@ restore — that path does not exist in the code.
 - [Admin experience](#admin-experience)
 - [The partials-only guarantee](#the-partials-only-guarantee)
 - [Live preview refresh & caching](#live-preview-refresh--caching)
+- [Fullscreen ("solo") a window](#fullscreen-solo-a-window)
 - [Configuration reference](#configuration-reference)
 - [Admin login](#admin-login)
 - [Install & deploy](#install--deploy)
@@ -86,6 +87,14 @@ Flow: **Head → Snapshot → (source head if ambiguous) → Confirm → Load**.
 - **Confirm** — a mandatory confirm sheet before the restore fires.
 - **Enlarged (input-group) editor** — 1080 heads can be opened full-screen to repoint
   individual windows (PiPs) to different input groups by number.
+- **Fullscreen a window ("solo")** — in the enlarged editor, **press and hold** a window to blow
+  it up to fill the head, video-only (its UMD/clock/audio-meter overlays are stripped for a clean
+  full-frame source); **press and hold again** to restore the original mosaic. A held gesture
+  buzzes (haptic) and shows a "working" spinner the moment it registers, so the operator knows to
+  let go while the board redraws. The soloed view turns green, and a centered on-screen prompt
+  (not a disappearing toast) shows how to go back. Source-repointing is disabled while soloed.
+  This is a **live, shared** change — every panel viewing that head sees it, any panel can
+  restore it, and the state **persists** (see below) so a redeploy can't strand an on-air head.
 
 Panels that aren't registered show their own client IP in the footer, so an admin can see
 exactly what to enter in the admin page.
@@ -140,6 +149,35 @@ navigating:
   cycle. Board load therefore scales with the number of distinct heads being viewed, not
   with panel count. A group change or a restore invalidates the affected head's cache so the
   operator sees their own change immediately.
+
+## Fullscreen ("solo") a window
+
+Press-and-hold a window in the enlarged editor to blow it up to fill the head, then hold again
+to restore the mosaic. The implementation is non-obvious because of a **hard firmware limit**
+this project proved by testing (documented in the code and dev notes): on Neuron View you
+**cannot hide or move a widget out of the way** — geometry is clamped on-canvas, there's no
+z-order control, a minimum render size, and off-screen/zero geometry is stored but not rendered.
+The **only** way to get a clean single-window fullscreen is to have a head that contains *just
+that one widget*.
+
+So "solo" works by **capture → delete → recreate**, all on the live head via `server/solostore.js`
+and the widget CRUD in `server/board.js`:
+
+1. **Capture** the head's full widget layout (every widget's complete definition) and persist it
+   to the volume (`SOLO_STATE_PATH`, default `/data/solo-state.json`).
+2. **Delete** every widget except the target, and set the target to full-canvas, **video-only**
+   (keep its `pip` element filled to the frame; drop UMD/clock/audio-meter overlays and border).
+3. **Restore** recreates the deleted widgets from the capture and puts the target back exactly.
+   Recreated widgets get new UUIDs — fine, because the app never persists widget UUIDs. Ordering
+   doesn't matter since these heads never overlap. The delete and recreate board calls run with
+   bounded parallelism so a large mosaic restores quickly.
+
+Because the capture is **persisted on the volume**, a soloed head survives a container redeploy
+and any panel can restore it — the state is the head's, not a browser session's. A **snapshot
+recall** to a soloed head wins and discards the capture; un-solo has a **staleness guard** so if
+the head was rebuilt externally (e.g. the native GUI) it drops the stale capture instead of
+duplicating windows onto the new layout. Solo/restore invalidate the head's preview cache so the
+change shows immediately.
 
 ## Configuration reference
 
@@ -293,6 +331,7 @@ networks:
 | `TZ` | (compose sets a zone) | Container timezone. Sets what the backup "time" field means and how timestamps read. Without it the container runs in UTC. |
 | `CONFIG_PATH` | `/data/config.json` | Path to the config file on the volume. |
 | `BACKUP_DIR` | `/data/backups` | Where scheduled backups are written. |
+| `SOLO_STATE_PATH` | `/data/solo-state.json` | Where fullscreen ("solo") state is persisted, so a soloed head survives a redeploy and any panel can restore it. On the volume by default; no compose change needed. |
 | `BOARD_SCHEME` | `https` | `http` or `https` for the board REST API. |
 | `BOARD_PORT` | (scheme default) | Override the board API port. |
 | `BOARD_TLS_REJECT_UNAUTHORIZED` | `false` | Set `true` only if boards present a CA-trusted cert (rare on broadcast gear). |
@@ -345,6 +384,7 @@ server/
   sharesweep.js Auto-share sweep
   zip.js        Dependency-free ZIP writer (for the per-snapshot backup bundle)
   logger.js     In-memory ring buffer of board API activity (admin log)
+  solostore.js  Persisted per-head fullscreen ("solo") capture (JSON on the volume)
 public/
   index.html    Operator touch UI
   app.js          ""      flow logic, live-preview polling, enlarged editor

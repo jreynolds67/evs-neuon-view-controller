@@ -566,6 +566,21 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
 // (solostore) so any panel can restore it and a redeploy can't strand an on-air head. The client
 // disables source-repointing while soloed, so nothing else changes the survivor meanwhile.
 
+// Run async tasks over `items` with bounded concurrency, swallowing individual failures (each
+// write is best-effort — a solo/unsolo shouldn't abort because one widget hiccuped). Far faster
+// than sequential awaits when a head has many windows, and order is irrelevant here (these heads
+// have no overlap/z-order), so recreating in parallel is safe.
+async function runPool(items, worker, concurrency = 6) {
+  let i = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (i < items.length) {
+      const idx = i++;
+      try { await worker(items[idx], idx); } catch { /* best-effort */ }
+    }
+  });
+  await Promise.all(runners);
+}
+
 app.post('/api/panel/cards/:cardId/heads/:headUuid/solo', async (req, res) => {
   const r = await resolveHeadRequest(req, res);
   if (!r) return;
@@ -580,13 +595,12 @@ app.post('/api/panel/cards/:cardId/heads/:headUuid/solo', async (req, res) => {
       return res.status(404).json({ error: 'That window is no longer on this head — please try again.' });
     }
     // Persist the FULL current layout BEFORE any destructive change, so restore is always
-    // possible even across a redeploy. If this throw, nothing has been deleted yet.
+    // possible even across a redeploy. If this throws, nothing has been deleted yet.
     await setSolo(cardId, headUuid, { targetUuid: targetWidgetUuid, widgets, at: Date.now() });
-    for (const w of widgets) {
-      if (w.uuid === targetWidgetUuid) continue;
-      try { await deleteHeadWidget(card.ip, headUuid, w.uuid); }
-      catch { /* best-effort; the persisted capture lets un-solo recreate it regardless */ }
-    }
+    // Delete the other windows in parallel (bounded) — the persisted capture lets un-solo
+    // recreate any that fail regardless.
+    await runPool(widgets.filter((w) => w.uuid !== targetWidgetUuid),
+      (w) => deleteHeadWidget(card.ip, headUuid, w.uuid));
     await setWidgetFullscreenVideoOnly(card.ip, headUuid, targetWidgetUuid);
     previewCache.invalidate(`${card.ip}::${headUuid}`);
     res.json({ ok: true });
@@ -610,14 +624,11 @@ app.post('/api/panel/cards/:cardId/heads/:headUuid/unsolo', async (req, res) => 
       previewCache.invalidate(`${card.ip}::${headUuid}`);
       return res.json({ ok: true, restored: false, stale: true });
     }
-    // Recreate the deleted windows and put the survivor back to its captured original.
-    for (const w of cap.widgets) {
-      if (w.uuid === cap.targetUuid) {
-        try { await setWidgetFull(card.ip, headUuid, cap.targetUuid, w); } catch { /* continue */ }
-      } else {
-        try { await createHeadWidget(card.ip, headUuid, w); } catch { /* continue */ }
-      }
-    }
+    // Recreate the deleted windows and put the survivor back to its captured original — in
+    // parallel (bounded), since this is the slow part on a big mosaic and order doesn't matter.
+    await runPool(cap.widgets, (w) => (w.uuid === cap.targetUuid)
+      ? setWidgetFull(card.ip, headUuid, cap.targetUuid, w)
+      : createHeadWidget(card.ip, headUuid, w));
     await clearSolo(cardId, headUuid);
     previewCache.invalidate(`${card.ip}::${headUuid}`);
     res.json({ ok: true, restored: true });

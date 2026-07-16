@@ -766,7 +766,11 @@ function addLongPress(el, handler, ms = 500) {
   const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
   el.addEventListener('pointerdown', (e) => {
     fired = false; sx = e.clientX; sy = e.clientY; cancel();
-    timer = setTimeout(() => { fired = true; timer = null; handler(); }, ms);
+    timer = setTimeout(() => {
+      fired = true; timer = null;
+      try { navigator.vibrate && navigator.vibrate(40); } catch {} // haptic "hold registered"
+      handler();
+    }, ms);
   });
   el.addEventListener('pointermove', (e) => {
     if (timer && (Math.abs(e.clientX - sx) > 12 || Math.abs(e.clientY - sy) > 12)) cancel();
@@ -776,30 +780,47 @@ function addLongPress(el, handler, ms = 500) {
   el.addEventListener('click', (e) => { if (fired) { e.stopPropagation(); e.preventDefault(); fired = false; } }, true);
 }
 
+// A full-editor "working" overlay, shown the INSTANT a hold registers and held until the board
+// finishes and the view redraws. Combined with the haptic buzz, it tells the operator the hold
+// took and they can release — covering the natural delay while the board rebuilds the layout.
+// It's inside fsBody, so renderFullscreen() (which clears fsBody) removes it automatically.
+function showFsWorking(msg) {
+  const body = $('fsBody');
+  if (!body) return;
+  let el = body.querySelector('.fs-working');
+  if (!el) { el = document.createElement('div'); el.className = 'fs-working'; body.appendChild(el); }
+  el.querySelector('.fs-working-msg')?.remove();
+  const span = document.createElement('span');
+  span.className = 'fs-working-msg';
+  span.textContent = msg;
+  el.appendChild(span);
+}
+function hideFsWorking() { $('fsBody')?.querySelector('.fs-working')?.remove(); }
+
 // Blow one window up to fullscreen (server captures the head, deletes the others, fullscreens
 // this one video-only). Refreshes to the soloed state on success.
 async function soloWindow(widgetUuid) {
   if (!fsState) return;
   const head = fsState.head;
+  showFsWorking('Going fullscreen…'); // immediate: release-now + working indication
   try {
     await api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/solo`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targetWidgetUuid: widgetUuid }),
     });
-    toast('Fullscreen — press and hold to restore', 'ok');
-    await fsRefreshNow();
-  } catch (e) { toast(e.message, 'err'); }
+    await fsRefreshNow(); // re-render clears the working overlay and shows the green fullscreen
+  } catch (e) { hideFsWorking(); toast(e.message, 'err'); }
 }
 
 // Restore the head's original layout (server recreates the deleted windows).
 async function unsoloWindow() {
   if (!fsState) return;
   const head = fsState.head;
+  showFsWorking('Restoring layout…');
   try {
     await api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/unsolo`, { method: 'POST' });
-    toast('Layout restored', 'ok');
     await fsRefreshNow();
-  } catch (e) { toast(e.message, 'err'); }
+  } catch (e) { hideFsWorking(); toast(e.message, 'err'); }
 }
 
 // Build one enlarged-view window node: positioned by its fractional geometry, labelled with
@@ -877,6 +898,21 @@ function createFsWindow(wd) {
     else if (e.key === 'Escape') { e.preventDefault(); win.classList.remove('editing'); }
   });
   input.addEventListener('blur', () => { win.classList.remove('editing'); });
+
+  // While soloed, replace the (hidden) input-number chrome with a persistent, centered
+  // instruction on how to go back — so the "press and hold to restore" guidance stays on screen
+  // instead of relying on a toast that disappears.
+  if (fsState && fsState.soloed) {
+    const hint = document.createElement('div');
+    hint.className = 'fs-restore-hint';
+    const icon = document.createElement('span');
+    icon.className = 'fs-restore-icon';
+    icon.textContent = '⤢';
+    const text = document.createElement('span');
+    text.textContent = 'Press and hold to restore the layout';
+    hint.append(icon, text);
+    win.appendChild(hint);
+  }
 
   // Press and hold: blow this window up to fullscreen, or restore the layout if already soloed.
   addLongPress(win, () => ((fsState && fsState.soloed) ? unsoloWindow() : soloWindow(wd.uuid)));

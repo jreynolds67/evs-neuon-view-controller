@@ -282,7 +282,7 @@ body.strip .step .dot { width: 20px; height: 20px; font-size: 11px; }
 .fs-header .fs-title { font-size: 18px; font-weight: 600; }
 .fs-header .fs-hint { color: var(--ink-dim); font-size: 13px; }
 .fs-header .grow { flex: 1; }
-.fs-body { flex: 1; padding: 12px 18px 18px; display: grid; place-items: center; overflow: hidden; min-height: 0; }
+.fs-body { flex: 1; padding: 12px 18px 18px; display: grid; place-items: center; overflow: hidden; min-height: 0; position: relative; }
 
 /* 16:9 stage that scales to fit while preserving aspect ratio. Height-bounded so it
    never runs past the bottom of the screen; width follows from the 16:9 ratio. */
@@ -314,9 +314,34 @@ body.strip .step .dot { width: 20px; height: 20px; font-size: 11px; }
 .fs-window.editing .fs-win-input { display: block; }
 /* Soloed (one window blown up to fullscreen): highlight it and hide the input-number chrome,
    since source editing is disabled here — the only gesture is press-and-hold to restore. */
-.fs-overlay.soloed .fs-window { border-color: var(--fire); background: rgba(41,209,124,0.10); }
+/* Soloed (one window blown up to fullscreen): the enlarged view turns GREEN to match the green
+   previews, source editing is disabled, and a persistent centered instruction (not a toast)
+   shows how to go back. */
+.fs-overlay.soloed .fs-window {
+  border-color: var(--fire); border-width: 3px;
+  background: rgba(41,209,124,0.16);
+}
 .fs-overlay.soloed .fs-win-num,
 .fs-overlay.soloed .fs-win-name { display: none; }
+.fs-restore-hint {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  color: var(--fire); text-align: center; padding: 12px; line-height: 1.2;
+  font-size: clamp(15px, 2.2vw, 24px); font-weight: 600;
+}
+.fs-restore-hint .fs-restore-icon { font-size: clamp(32px, 6vw, 72px); line-height: 1; }
+/* "Working…" overlay shown the instant a hold registers, held until the board redraw lands. */
+.fs-working {
+  position: absolute; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(14,17,22,0.55); color: var(--ink);
+  font-size: clamp(15px, 2.2vw, 22px); font-weight: 600;
+}
+.fs-working::before {
+  content: ''; width: 22px; height: 22px; margin-right: 12px;
+  border: 3px solid var(--ink-dim); border-top-color: var(--fire); border-radius: 50%;
+  animation: fs-spin 0.7s linear infinite;
+}
+@keyframes fs-spin { to { transform: rotate(360deg); } }
 
 /* Focus visibility for accessibility even on touch. */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
