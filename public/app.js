@@ -628,6 +628,24 @@ function connectControlWs() {
 
 let fsState = null; // { head, widgets, groups, soloed }
 let fsPollTimer = null;
+// Generation token for the enlarged view. Any operation that changes the head (solo/unsolo)
+// bumps it, so a poll whose fetch STARTED earlier can't land afterwards and repaint stale data
+// over the fresh render — the bug where restoring flashed, then snapped back to the fullscreen
+// layout until the next poll. `fsBusy` additionally suppresses polling entirely while an
+// operation is in flight.
+let fsSeq = 0;
+let fsBusy = false;
+function fsBump() { return ++fsSeq; }
+function fsStale(token) { return token !== fsSeq; }
+
+// True only when the head is GENUINELY showing a soloed window: the server says soloed AND the
+// head really has just the one survivor. The server persists the capture BEFORE deleting the
+// other widgets (for crash safety), so there's a brief window where `soloed` is true while the
+// full mosaic is still present — without this check, a poll landing in that window would paint
+// the "press and hold to restore" prompt on EVERY pip.
+function fsIsSoloView() {
+  return !!(fsState && fsState.soloed && (fsState.widgets || []).length === 1);
+}
 
 async function openFullscreen(head) {
   stopPreviewPolling(); // the editor covers the heads grid; don't poll behind it
@@ -670,7 +688,9 @@ function startFullscreenPolling() {
   stopFullscreenPolling();
   const tick = async () => {
     if (!fsState) { stopFullscreenPolling(); return; }
-    if (!document.hidden) {
+    // Never poll over a solo/unsolo in flight — its own refresh is authoritative.
+    if (!document.hidden && !fsBusy) {
+      const token = fsSeq;
       try {
         const head = fsState.head;
         const [preview, { groups }] = await Promise.all([
@@ -678,8 +698,10 @@ function startFullscreenPolling() {
           api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/groups`),
         ]);
         const widgets = preview.widgets || [];
-        // Guard against a race: the view may have closed or switched heads during the fetch.
-        if (fsState && fsState.head === head) {
+        // Guard against races: the view may have closed/switched heads during the fetch, or a
+        // solo/unsolo may have completed — in which case this response is stale and must NOT
+        // repaint over the fresher render.
+        if (fsState && fsState.head === head && !fsStale(token) && !fsBusy) {
           if (fsIsEditing()) {
             updateFullscreenPreservingEdit(widgets, groups || [], !!preview.soloed);
           } else {
@@ -701,13 +723,15 @@ function stopFullscreenPolling() {
 // immediately sees the state the other panel's recall produced). Skips if editing.
 async function fsRefreshNow() {
   if (!fsState || fsIsEditing()) return;
+  const token = fsSeq;
   try {
     const head = fsState.head;
     const [preview, { groups }] = await Promise.all([
       api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/preview`),
       api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/groups`),
     ]);
-    if (!fsState || fsState.head !== head || fsIsEditing()) return;
+    // Bail if the view changed or another operation superseded this refresh mid-fetch.
+    if (!fsState || fsState.head !== head || fsIsEditing() || fsStale(token)) return;
     fsState = { head, widgets: preview.widgets || [], groups: groups || [], soloed: !!preview.soloed };
     renderFullscreen();
   } catch { /* leave current view on failure */ }
@@ -736,17 +760,18 @@ function groupByNumber(num) {
 function renderFullscreen() {
   const body = $('fsBody');
   body.innerHTML = '';
-  const { widgets, soloed } = fsState;
+  const { widgets } = fsState;
+  const soloView = fsIsSoloView(); // see fsIsSoloView: requires the head to really have 1 widget
 
   // The header hint doubles as the affordance for the press-and-hold gesture, and flips to the
   // restore instruction while a window is blown up.
   const hint = $('fsHint');
   if (hint) {
-    hint.textContent = soloed
+    hint.textContent = soloView
       ? 'Fullscreen — press and hold to restore the layout'
       : 'Tap a window to change its input · press and hold to make it fullscreen';
   }
-  $('fsOverlay').classList.toggle('soloed', !!soloed);
+  $('fsOverlay').classList.toggle('soloed', soloView);
 
   // 16:9 stage that fills the available space.
   const stage = document.createElement('div');
@@ -798,7 +823,9 @@ function hideFsWorking() { $('fsBody')?.querySelector('.fs-working')?.remove(); 
 // Blow one window up to fullscreen (server captures the head, deletes the others, fullscreens
 // this one video-only). Refreshes to the soloed state on success.
 async function soloWindow(widgetUuid) {
-  if (!fsState) return;
+  if (!fsState || fsBusy) return; // ignore a second hold while one is already running
+  fsBusy = true;
+  fsBump(); // invalidate any poll fetch already in flight so it can't repaint over us
   const head = fsState.head;
   showFsWorking('Going fullscreen…'); // immediate: release-now + working indication
   try {
@@ -808,17 +835,21 @@ async function soloWindow(widgetUuid) {
     });
     await fsRefreshNow(); // re-render clears the working overlay and shows the green fullscreen
   } catch (e) { hideFsWorking(); toast(e.message, 'err'); }
+  finally { fsBusy = false; }
 }
 
 // Restore the head's original layout (server recreates the deleted windows).
 async function unsoloWindow() {
-  if (!fsState) return;
+  if (!fsState || fsBusy) return; // ignore a second hold while one is already running
+  fsBusy = true;
+  fsBump(); // invalidate any poll fetch already in flight so it can't repaint the soloed layout back
   const head = fsState.head;
   showFsWorking('Restoring layout…');
   try {
     await api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/unsolo`, { method: 'POST' });
     await fsRefreshNow();
   } catch (e) { hideFsWorking(); toast(e.message, 'err'); }
+  finally { fsBusy = false; }
 }
 
 // Build one enlarged-view window node: positioned by its fractional geometry, labelled with
@@ -900,7 +931,7 @@ function createFsWindow(wd) {
   // While soloed, replace the (hidden) input-number chrome with a persistent, centered
   // instruction on how to go back — so the "press and hold to restore" guidance stays on screen
   // instead of relying on a toast that disappears.
-  if (fsState && fsState.soloed) {
+  if (fsIsSoloView()) {
     const hint = document.createElement('div');
     hint.className = 'fs-restore-hint';
     const icon = document.createElement('span');
