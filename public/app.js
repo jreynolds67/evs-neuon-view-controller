@@ -624,7 +624,7 @@ function connectControlWs() {
 // is tappable to enter a new number, which repoints that window's widget to the matching
 // input group on the live board.
 
-let fsState = null; // { head, widgets, groups }
+let fsState = null; // { head, widgets, groups, soloed }
 let fsPollTimer = null;
 
 async function openFullscreen(head) {
@@ -635,11 +635,11 @@ async function openFullscreen(head) {
   $('fsBody').innerHTML = '<div class="preview-loading" style="padding:40px">Loading windows…</div>';
 
   try {
-    const [{ widgets }, { groups }] = await Promise.all([
+    const [preview, { groups }] = await Promise.all([
       api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/preview`),
       api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/groups`),
     ]);
-    fsState = { head, widgets: widgets || [], groups: groups || [] };
+    fsState = { head, widgets: preview.widgets || [], groups: groups || [], soloed: !!preview.soloed };
     renderFullscreen();
     startFullscreenPolling(); // keep the enlarged view live to recalls from other panels
   } catch (e) {
@@ -671,16 +671,17 @@ function startFullscreenPolling() {
     if (!document.hidden) {
       try {
         const head = fsState.head;
-        const [{ widgets }, { groups }] = await Promise.all([
+        const [preview, { groups }] = await Promise.all([
           api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/preview`),
           api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/groups`),
         ]);
+        const widgets = preview.widgets || [];
         // Guard against a race: the view may have closed or switched heads during the fetch.
         if (fsState && fsState.head === head) {
           if (fsIsEditing()) {
-            updateFullscreenPreservingEdit(widgets || [], groups || []);
+            updateFullscreenPreservingEdit(widgets, groups || [], !!preview.soloed);
           } else {
-            fsState = { head, widgets: widgets || [], groups: groups || [] };
+            fsState = { head, widgets, groups: groups || [], soloed: !!preview.soloed };
             renderFullscreen();
           }
         }
@@ -700,12 +701,12 @@ async function fsRefreshNow() {
   if (!fsState || fsIsEditing()) return;
   try {
     const head = fsState.head;
-    const [{ widgets }, { groups }] = await Promise.all([
+    const [preview, { groups }] = await Promise.all([
       api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/preview`),
       api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/groups`),
     ]);
     if (!fsState || fsState.head !== head || fsIsEditing()) return;
-    fsState = { head, widgets: widgets || [], groups: groups || [] };
+    fsState = { head, widgets: preview.widgets || [], groups: groups || [], soloed: !!preview.soloed };
     renderFullscreen();
   } catch { /* leave current view on failure */ }
 }
@@ -733,7 +734,17 @@ function groupByNumber(num) {
 function renderFullscreen() {
   const body = $('fsBody');
   body.innerHTML = '';
-  const { widgets } = fsState;
+  const { widgets, soloed } = fsState;
+
+  // The header hint doubles as the affordance for the press-and-hold gesture, and flips to the
+  // restore instruction while a window is blown up.
+  const hint = $('fsHint');
+  if (hint) {
+    hint.textContent = soloed
+      ? 'Fullscreen — press and hold to restore the layout'
+      : 'Tap a window to change its input · press and hold to make it fullscreen';
+  }
+  $('fsOverlay').classList.toggle('soloed', !!soloed);
 
   // 16:9 stage that fills the available space.
   const stage = document.createElement('div');
@@ -746,6 +757,49 @@ function renderFullscreen() {
   }
 
   widgets.forEach((wd) => stage.appendChild(createFsWindow(wd)));
+}
+
+// Press-and-hold detection on a window. Fires once after `ms` if the pointer hasn't moved far,
+// and suppresses the click that follows so a hold doesn't also trigger tap-to-edit.
+function addLongPress(el, handler, ms = 500) {
+  let timer = null, fired = false, sx = 0, sy = 0;
+  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  el.addEventListener('pointerdown', (e) => {
+    fired = false; sx = e.clientX; sy = e.clientY; cancel();
+    timer = setTimeout(() => { fired = true; timer = null; handler(); }, ms);
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (timer && (Math.abs(e.clientX - sx) > 12 || Math.abs(e.clientY - sy) > 12)) cancel();
+  });
+  el.addEventListener('pointerup', cancel);
+  el.addEventListener('pointercancel', () => { cancel(); fired = false; });
+  el.addEventListener('click', (e) => { if (fired) { e.stopPropagation(); e.preventDefault(); fired = false; } }, true);
+}
+
+// Blow one window up to fullscreen (server captures the head, deletes the others, fullscreens
+// this one video-only). Refreshes to the soloed state on success.
+async function soloWindow(widgetUuid) {
+  if (!fsState) return;
+  const head = fsState.head;
+  try {
+    await api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/solo`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetWidgetUuid: widgetUuid }),
+    });
+    toast('Fullscreen — press and hold to restore', 'ok');
+    await fsRefreshNow();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// Restore the head's original layout (server recreates the deleted windows).
+async function unsoloWindow() {
+  if (!fsState) return;
+  const head = fsState.head;
+  try {
+    await api(`/api/panel/cards/${head.cardId}/heads/${head.headUuid}/unsolo`, { method: 'POST' });
+    toast('Layout restored', 'ok');
+    await fsRefreshNow();
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 // Build one enlarged-view window node: positioned by its fractional geometry, labelled with
@@ -775,8 +829,10 @@ function createFsWindow(wd) {
 
   const input = win.querySelector('.fs-win-input');
 
-  // Tap/click the window → immediately begin keyboard entry.
+  // Tap/click the window → immediately begin keyboard entry. Disabled while soloed: source
+  // changes aren't allowed on a fullscreen window (decision), so a tap does nothing there.
   win.addEventListener('click', () => {
+    if (fsState && fsState.soloed) return;
     if (win.classList.contains('editing')) return;
     win.classList.add('editing');
     input.value = '';
@@ -822,6 +878,9 @@ function createFsWindow(wd) {
   });
   input.addEventListener('blur', () => { win.classList.remove('editing'); });
 
+  // Press and hold: blow this window up to fullscreen, or restore the layout if already soloed.
+  addLongPress(win, () => ((fsState && fsState.soloed) ? unsoloWindow() : soloWindow(wd.uuid)));
+
   return win;
 }
 
@@ -830,7 +889,7 @@ function createFsWindow(wd) {
 // or repointed a different window on this same head, and that should show up live — but the
 // field being typed into must be left exactly as-is. Rebuilds every OTHER window from fresh
 // data and leaves the editing window's DOM node untouched.
-function updateFullscreenPreservingEdit(widgets, groups) {
+function updateFullscreenPreservingEdit(widgets, groups, soloed) {
   const overlay = $('fsOverlay');
   const editingWin = overlay ? overlay.querySelector('.fs-window.editing') : null;
   const editingUuid = editingWin ? editingWin.dataset.widgetUuid : null;
@@ -842,7 +901,7 @@ function updateFullscreenPreservingEdit(widgets, groups) {
   if (editingUuid && !widgets.some((w) => w.uuid === editingUuid)) return;
 
   // Adopt the fresh data as the source of truth (commit() and label lookups read fsState).
-  fsState = { head: fsState.head, widgets, groups };
+  fsState = { head: fsState.head, widgets, groups, soloed: !!soloed };
 
   const stage = $('fsBody').querySelector('.fs-stage');
   if (!stage) { renderFullscreen(); return; }

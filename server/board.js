@@ -474,82 +474,21 @@ export async function setWidgetGroup(ip, headUuid, widgetUuid, groupUuid) {
   return result;
 }
 
-// Set ONE widget's geometry via read-modify-write, preserving every other field (elements,
-// groupUuid, name, properties). This is the core primitive for the eventual "blow a window up
-// to fullscreen" feature; right now it backs the admin geometry PROBE, whose job is to answer
-// an unknown the API spec can't: will the board accept overlapping / off-canvas geometry that
-// the native GUI blocks? Returns the previous geometry so the caller can restore it exactly.
-//
-// NOTE: deliberately WITHOUT the concurrent-edit fingerprint guard setWidgetGroup uses — the
-// probe is a single deliberate admin action. The production fullscreen feature would reinstate
-// that guard (and capture the whole head), since it fires unattended from operator panels.
-export async function setWidgetGeometry(ip, headUuid, widgetUuid, geometry) {
-  const cur = await getHeadWidget(ip, headUuid, widgetUuid);
-  const previous = cur.geometry || null;
-  const change = {
-    elements: cur.elements || [],
-    geometry,
-    groupUuid: cur.groupUuid || '',
-    name: cur.name || '',
-    properties: cur.properties || { borderColor: '', borderSize: '' },
-  };
-  const result = await boardFetch(ip, `/heads/${headUuid}/widgets/${widgetUuid}`, {
-    method: 'PUT',
-    body: JSON.stringify(change),
-  });
-  // Read back what the board ACTUALLY stored. A geometry that comes back different from what we
-  // sent (reverted to the old value, or clamped) means the board didn't take the change — which
-  // is a completely different failure from "stored fine but still renders". This distinction is
-  // what the probe needs, so surface the confirmed geometry to the caller.
-  let confirmed = null;
-  try { const after = await getHeadWidget(ip, headUuid, widgetUuid); confirmed = after.geometry || null; }
-  catch { /* read-back failed; leave confirmed null */ }
-  log({
-    ip, method: 'GEOM', path: `/heads/${headUuid}/widgets/${widgetUuid}`, status: null, ok: true,
-    detail: `set x:${geometry.x} y:${geometry.y} w:${geometry.width} h:${geometry.height}`
-      + (confirmed ? ` · board now x:${confirmed.x} y:${confirmed.y} w:${confirmed.width} h:${confirmed.height}` : ''),
-  });
-  return { previous, applied: geometry, confirmed, result };
-}
+// --- Fullscreen ("solo") a head's window -----------------------------------
+// Investigation (see the widget-geometry memory) proved you cannot HIDE a widget on this
+// firmware — only DELETE removes it from the render. So "blow up to fullscreen" is: capture the
+// head, delete every other widget, and turn the survivor into a full-canvas VIDEO-ONLY window.
+// Restore recreates the deleted widgets and puts the survivor back exactly.
 
-// Toggle the `visible` flag on every element of a widget, preserving everything else. Tests
-// whether hiding a widget's contents (rather than resizing it) makes it render nothing —
-// transparent — so a fullscreen window underneath shows through despite the fixed z-order.
-// Read-modify-write; reads back the stored visible flags so we can tell if the board honored
-// `visible:false` at all. Part of the geometry/fullscreen PROBE.
-export async function setWidgetElementsVisible(ip, headUuid, widgetUuid, visible) {
-  const cur = await getHeadWidget(ip, headUuid, widgetUuid);
-  const change = {
-    elements: (cur.elements || []).map((el) => ({ ...el, visible })),
-    geometry: cur.geometry,
-    groupUuid: cur.groupUuid || '',
-    name: cur.name || '',
-    properties: cur.properties || { borderColor: '', borderSize: '' },
-  };
-  const result = await boardFetch(ip, `/heads/${headUuid}/widgets/${widgetUuid}`, {
-    method: 'PUT', body: JSON.stringify(change),
-  });
-  let confirmed = null;
-  try { const after = await getHeadWidget(ip, headUuid, widgetUuid); confirmed = (after.elements || []).map((e) => e.visible); }
-  catch { /* read-back failed */ }
-  log({
-    ip, method: 'VIS', path: `/heads/${headUuid}/widgets/${widgetUuid}`, status: null, ok: true,
-    detail: `set elements visible=${visible}${confirmed ? ` · board now [${confirmed.join(',')}]` : ''}`,
-  });
-  return { visible, confirmed, result };
-}
+const FULL = { x: 0, y: 0, width: 1, height: 1 };
 
-// Delete one widget from a head (DELETE /heads/{head}/widgets/{widget}). Unlike hiding, this
-// actually REMOVES the widget from the render — the key to a clean fullscreen (a head with one
-// widget has nothing else to draw). Destructive: the caller must have captured the widget's full
-// definition first if it intends to recreate it.
+// Delete one widget from a head. This is the ONLY way to remove a widget from the live render.
 export async function deleteHeadWidget(ip, headUuid, widgetUuid) {
   return boardFetch(ip, `/heads/${headUuid}/widgets/${widgetUuid}`, { method: 'DELETE' });
 }
 
-// Recreate a widget on a head (POST /heads/{head}/widgets) from a captured WidgetGet. The board
-// assigns a NEW uuid (fine — this app never persists widget UUIDs). Body is a WidgetChange
-// (WidgetGet minus uuid). Returns the created WidgetGet (with its new uuid).
+// Recreate a widget on a head from a captured WidgetGet. The board assigns a NEW uuid (fine —
+// this app never persists widget UUIDs). Body is a WidgetChange (WidgetGet minus uuid).
 export async function createHeadWidget(ip, headUuid, widget) {
   const change = {
     elements: widget.elements || [],
@@ -561,64 +500,45 @@ export async function createHeadWidget(ip, headUuid, widget) {
   return boardFetch(ip, `/heads/${headUuid}/widgets`, { method: 'POST', body: JSON.stringify(change) });
 }
 
-// One head's full definition (HeadGet), including its ordered `widgets` UUID list — the only
-// z-order lever the API exposes.
-export async function getHead(ip, headUuid) {
-  return boardFetch(ip, `/heads/${headUuid}`);
-}
-
-// Build a HeadChange from a HeadGet with a replacement widget order, preserving every other
-// head field (HeadChange = HeadGet minus uuid). Internal helper for the reorder calls below.
-function headChangeWithOrder(head, orderedUuids) {
-  return {
-    backgroundColor: head.backgroundColor,
-    backgroundMode: head.backgroundMode,
-    colorSpace: head.colorSpace,
-    height: head.height,
-    name: head.name,
-    widgets: orderedUuids,
-    width: head.width,
-    x: head.x,
-    y: head.y,
+// PUT a widget's full definition back (keeps its uuid). Used to restore the survivor to its
+// captured original (elements, geometry, border, source) when un-soloing.
+export async function setWidgetFull(ip, headUuid, widgetUuid, widget) {
+  const change = {
+    elements: widget.elements || [],
+    geometry: widget.geometry,
+    groupUuid: widget.groupUuid || '',
+    name: widget.name || '',
+    properties: widget.properties || { borderColor: '', borderSize: '' },
   };
+  return boardFetch(ip, `/heads/${headUuid}/widgets/${widgetUuid}`, { method: 'PUT', body: JSON.stringify(change) });
 }
 
-// Move ONE widget to the end ('front') or start ('back') of a head's widget list, to test
-// whether array order drives paint/z-order. Read-modify-write on the head; returns the
-// previous and new order so the caller can restore it exactly. Part of the geometry PROBE.
-export async function moveHeadWidgetOrder(ip, headUuid, widgetUuid, position) {
-  const head = await getHead(ip, headUuid);
-  const order = Array.isArray(head.widgets) ? head.widgets.slice() : [];
-  const idx = order.indexOf(widgetUuid);
-  if (idx < 0) {
-    const err = new Error(`Widget ${widgetUuid} is not in head ${headUuid}'s widget list`);
-    err.status = 404;
-    throw err;
-  }
-  const previousOrder = order.slice();
-  order.splice(idx, 1);
-  if (position === 'back') order.unshift(widgetUuid); else order.push(widgetUuid); // 'front' = end
-  const result = await boardFetch(ip, `/heads/${headUuid}`, {
-    method: 'PUT', body: JSON.stringify(headChangeWithOrder(head, order)),
+// Turn a widget into a full-canvas, VIDEO-ONLY window: geometry to full, keep only its `pip`
+// (video) element(s) filled to the frame, drop UMDs/clocks/audio meters and any border. If the
+// widget has no pip element (unexpected for a video window), fall back to keeping its existing
+// elements so we never blank the window — just fullscreen it.
+export async function setWidgetFullscreenVideoOnly(ip, headUuid, widgetUuid) {
+  const cur = await getHeadWidget(ip, headUuid, widgetUuid);
+  const pips = (cur.elements || []).filter((el) => el && el.type === 'pip');
+  const elements = pips.length
+    ? pips.map((el) => ({ ...el, geometry: { ...FULL }, visible: true }))
+    : (cur.elements || []);
+  const change = {
+    elements,
+    geometry: { ...FULL },
+    groupUuid: cur.groupUuid || '',
+    name: cur.name || '',
+    // Drop any border so it's pure video.
+    properties: { borderColor: '', borderSize: '' },
+  };
+  const result = await boardFetch(ip, `/heads/${headUuid}/widgets/${widgetUuid}`, {
+    method: 'PUT', body: JSON.stringify(change),
   });
   log({
-    ip, method: 'ORDER', path: `/heads/${headUuid}`, status: null, ok: true,
-    detail: `moved widget to ${position === 'back' ? 'start' : 'end'} of ${order.length}-widget list`,
+    ip, method: 'SOLO', path: `/heads/${headUuid}/widgets/${widgetUuid}`, status: null, ok: true,
+    detail: `fullscreen video-only (${pips.length ? `${pips.length} pip` : 'no pip — kept elements'})`,
   });
-  return { previousOrder, newOrder: order, result };
-}
-
-// Restore an exact widget order (undo a reorder test). Read-modify-write on the head.
-export async function setHeadWidgetOrder(ip, headUuid, orderedUuids) {
-  const head = await getHead(ip, headUuid);
-  const result = await boardFetch(ip, `/heads/${headUuid}`, {
-    method: 'PUT', body: JSON.stringify(headChangeWithOrder(head, orderedUuids)),
-  });
-  log({
-    ip, method: 'ORDER', path: `/heads/${headUuid}`, status: null, ok: true,
-    detail: `restored widget order (${orderedUuids.length} widgets)`,
-  });
-  return { result };
+  return result;
 }
 
 // Reduce a raw widget (WidgetGet) to the minimal shape the preview renderer needs:

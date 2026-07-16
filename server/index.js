@@ -17,10 +17,10 @@ import {
   getSnapshotModel, extractSnapshotHeads, restorePartial,
   normalizeSnapshotEntry, getHeadWidgets, normalizeWidgetForPreview,
   extractSnapshotHeadWidgets, getSnapshotModelCached, buildSnapshotWidgetIndex,
-  getInputGroups, setWidgetGroup, setWidgetGeometry,
-  moveHeadWidgetOrder, setHeadWidgetOrder, setWidgetElementsVisible,
-  deleteHeadWidget, createHeadWidget,
+  getInputGroups, setWidgetGroup,
+  deleteHeadWidget, createHeadWidget, setWidgetFull, setWidgetFullscreenVideoOnly,
 } from './board.js';
+import { loadSoloStore, isSoloed, getSolo, setSolo, clearSolo } from './solostore.js';
 import { getEntries, clear as clearLog, log } from './logger.js';
 import { startShareSweep, shareSweepStatus, runShareSweepNow, applyShareSweepConfig } from './sharesweep.js';
 import {
@@ -375,7 +375,9 @@ app.get('/api/panel/cards/:cardId/heads/:headUuid/preview', async (req, res) => 
   try {
     const key = `${card.ip}::${req.params.headUuid}`;
     const widgets = await previewCache.get(key, () => getHeadWidgets(card.ip, req.params.headUuid));
-    res.json({ widgets: (widgets || []).map(normalizeWidgetForPreview) });
+    // `soloed` (sync Map lookup, no board call) tells the enlarged editor a window here is blown
+    // up to fullscreen, so it offers "hold to restore" instead of treating it as a normal head.
+    res.json({ widgets: (widgets || []).map(normalizeWidgetForPreview), soloed: isSoloed(req.params.cardId, req.params.headUuid) });
   } catch (e) {
     // If the head's board UUID drifted (typically a board software update), return a clear,
     // actionable message instead of leaking a raw "IP/UUID -> 500". headIsStale() only probes
@@ -543,6 +545,9 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
     // The restore changed the target head — drop its cached preview so panels see the new
     // content on their next poll instead of a stale copy.
     previewCache.invalidate(`${card.ip}::${targetHeadUuid}`);
+    // A recall replaces this head's widgets, so any solo capture for it is now stale — the recall
+    // wins. Discard it so a later un-solo can't dump the old (captured) windows onto the new layout.
+    try { await clearSolo(req.params.cardId, targetHeadUuid); } catch { /* non-fatal */ }
     res.json({ ok: true, result });
   } catch (e) {
     // Same UUID-drift case the preview endpoint handles: if the target head's ID changed on the
@@ -552,6 +557,71 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
     if (await headIsStale(card.ip, targetHeadUuid, e)) return sendHeadStale(res);
     sendPanelErr(res, e);
   }
+});
+
+// --- Fullscreen ("solo") one window on a head ------------------------------
+// Blow up one window to fullscreen, video-only. You cannot HIDE a widget on this firmware (see
+// the widget-geometry memory), so we CAPTURE the head's full widget layout, DELETE every other
+// widget, and turn the survivor into a full-canvas video-only window. The capture is persisted
+// (solostore) so any panel can restore it and a redeploy can't strand an on-air head. The client
+// disables source-repointing while soloed, so nothing else changes the survivor meanwhile.
+
+app.post('/api/panel/cards/:cardId/heads/:headUuid/solo', async (req, res) => {
+  const r = await resolveHeadRequest(req, res);
+  if (!r) return;
+  const { card } = r;
+  const { cardId, headUuid } = req.params;
+  const { targetWidgetUuid } = req.body || {};
+  if (!targetWidgetUuid) return res.status(400).json({ error: 'targetWidgetUuid is required' });
+  if (isSoloed(cardId, headUuid)) return res.status(409).json({ error: 'This head is already fullscreen.' });
+  try {
+    const widgets = await getHeadWidgets(card.ip, headUuid);
+    if (!widgets.some((w) => w.uuid === targetWidgetUuid)) {
+      return res.status(404).json({ error: 'That window is no longer on this head — please try again.' });
+    }
+    // Persist the FULL current layout BEFORE any destructive change, so restore is always
+    // possible even across a redeploy. If this throw, nothing has been deleted yet.
+    await setSolo(cardId, headUuid, { targetUuid: targetWidgetUuid, widgets, at: Date.now() });
+    for (const w of widgets) {
+      if (w.uuid === targetWidgetUuid) continue;
+      try { await deleteHeadWidget(card.ip, headUuid, w.uuid); }
+      catch { /* best-effort; the persisted capture lets un-solo recreate it regardless */ }
+    }
+    await setWidgetFullscreenVideoOnly(card.ip, headUuid, targetWidgetUuid);
+    previewCache.invalidate(`${card.ip}::${headUuid}`);
+    res.json({ ok: true });
+  } catch (e) { sendPanelErr(res, e); }
+});
+
+app.post('/api/panel/cards/:cardId/heads/:headUuid/unsolo', async (req, res) => {
+  const r = await resolveHeadRequest(req, res);
+  if (!r) return;
+  const { card } = r;
+  const { cardId, headUuid } = req.params;
+  const cap = getSolo(cardId, headUuid);
+  if (!cap) return res.json({ ok: true, restored: false }); // nothing soloed — no-op
+  try {
+    // Staleness guard: if the survivor widget is gone, the head was recalled/rebuilt externally
+    // (e.g. the native GUI). Recreating our captured widgets would DUPLICATE onto the new layout,
+    // so drop the stale capture and leave the current layout untouched.
+    const live = await getHeadWidgets(card.ip, headUuid);
+    if (!live.some((w) => w.uuid === cap.targetUuid)) {
+      await clearSolo(cardId, headUuid);
+      previewCache.invalidate(`${card.ip}::${headUuid}`);
+      return res.json({ ok: true, restored: false, stale: true });
+    }
+    // Recreate the deleted windows and put the survivor back to its captured original.
+    for (const w of cap.widgets) {
+      if (w.uuid === cap.targetUuid) {
+        try { await setWidgetFull(card.ip, headUuid, cap.targetUuid, w); } catch { /* continue */ }
+      } else {
+        try { await createHeadWidget(card.ip, headUuid, w); } catch { /* continue */ }
+      }
+    }
+    await clearSolo(cardId, headUuid);
+    previewCache.invalidate(`${card.ip}::${headUuid}`);
+    res.json({ ok: true, restored: true });
+  } catch (e) { sendPanelErr(res, e); }
 });
 
 // --- admin auth ------------------------------------------------------------
@@ -959,156 +1029,6 @@ app.post('/api/admin/cards/:cardId/sync-trigger', requireAdmin, async (req, res)
   }
 });
 
-// --- Widget geometry PROBE (admin-only test tool) --------------------------
-// Answers the one thing the API spec can't: will a board accept overlapping / fullscreen /
-// off-canvas widget geometry that the native GUI blocks? Read-modify-write on a single widget,
-// fully reversible (the POST returns the previous geometry so the UI can restore it). Nothing
-// here is persisted to config. This is scaffolding to validate the "blow a window up to
-// fullscreen" idea before committing to the full feature.
-
-// List a head's widgets with their current geometry, so a widget can be picked to test.
-app.get('/api/admin/cards/:cardId/heads/:headUuid/widgets', requireAdmin, async (req, res) => {
-  const config = await loadConfig();
-  const card = getCardById(config, req.params.cardId);
-  if (!card) return res.status(404).json({ error: 'Unknown card' });
-  try {
-    const widgets = await getHeadWidgets(card.ip, req.params.headUuid);
-    res.json((widgets || []).map((w) => ({
-      uuid: w.uuid, name: w.name || '', groupUuid: w.groupUuid || '', geometry: w.geometry || null,
-      // Element types (box/pip/audiobar/clock) + whether it's bound to an input group. A `pip`
-      // element and/or a non-empty groupUuid marks a LIVE VIDEO widget, which appears to sit on
-      // a compositing plane above graphics — the crux of why fullscreen doesn't cover them.
-      elementTypes: Array.isArray(w.elements) ? [...new Set(w.elements.map((el) => el.type).filter(Boolean))] : [],
-      hasGroup: !!(w.groupUuid && w.groupUuid !== '00000000-0000-0000-0000-000000000000'),
-    })));
-  } catch (e) { sendErr(res, e); }
-});
-
-// Apply an arbitrary geometry to one widget. Body: { geometry: { x, y, width, height } }.
-// Values are NOT range-clamped on purpose — the whole point is to see whether the board rejects
-// out-of-bounds/overlapping geometry (a raw 400 body is surfaced via sendErr for diagnosis).
-app.post('/api/admin/cards/:cardId/heads/:headUuid/widgets/:widgetUuid/geometry', requireAdmin, async (req, res) => {
-  const config = await loadConfig();
-  const card = getCardById(config, req.params.cardId);
-  if (!card) return res.status(404).json({ error: 'Unknown card' });
-  const g = (req.body && req.body.geometry) || {};
-  const num = (v) => (typeof v === 'number' && Number.isFinite(v)) ? v : NaN;
-  const geometry = { x: num(g.x), y: num(g.y), width: num(g.width), height: num(g.height) };
-  if (Object.values(geometry).some(Number.isNaN)) {
-    return res.status(400).json({ error: 'geometry must have numeric x, y, width, height' });
-  }
-  try {
-    const out = await setWidgetGeometry(card.ip, req.params.headUuid, req.params.widgetUuid, geometry);
-    res.json({ ok: true, ...out });
-  } catch (e) { sendErr(res, e); }
-});
-
-// Move one widget to the front (end of list) or back (start) — tests whether the head's widget
-// array order drives z-order. Returns previousOrder so the UI can restore it.
-app.post('/api/admin/cards/:cardId/heads/:headUuid/widgets/:widgetUuid/order', requireAdmin, async (req, res) => {
-  const config = await loadConfig();
-  const card = getCardById(config, req.params.cardId);
-  if (!card) return res.status(404).json({ error: 'Unknown card' });
-  const position = (req.body && req.body.position) === 'back' ? 'back' : 'front';
-  try {
-    const out = await moveHeadWidgetOrder(card.ip, req.params.headUuid, req.params.widgetUuid, position);
-    res.json({ ok: true, position, ...out });
-  } catch (e) { sendErr(res, e); }
-});
-
-// SOLO via DELETE (the real mechanism prototype): capture every widget on the head, DELETE all
-// but the target, then fullscreen the target. Capture is held SERVER-SIDE (in memory) so a page
-// reload can't strand the head with the mosaic gone. Restore recreates the deleted widgets.
-// NOTE: in-memory only for this probe — a container restart between solo and restore loses the
-// capture (recover by recalling a snapshot). The real feature would persist the capture.
-const soloCaptures = new Map(); // `${cardId}::${headUuid}` -> { widgets:[full WidgetGet], targetUuid, at }
-
-app.post('/api/admin/cards/:cardId/heads/:headUuid/solo-delete', requireAdmin, async (req, res) => {
-  const config = await loadConfig();
-  const card = getCardById(config, req.params.cardId);
-  if (!card) return res.status(404).json({ error: 'Unknown card' });
-  const targetUuid = req.body && req.body.targetUuid;
-  if (!targetUuid) return res.status(400).json({ error: 'targetUuid is required' });
-  const key = `${req.params.cardId}::${req.params.headUuid}`;
-  try {
-    const widgets = await getHeadWidgets(card.ip, req.params.headUuid);
-    if (!widgets.some((w) => w.uuid === targetUuid)) {
-      return res.status(404).json({ error: 'Target widget not found on this head' });
-    }
-    // Capture BEFORE any destructive change, so restore is always possible.
-    soloCaptures.set(key, { widgets, targetUuid, at: Date.now() });
-    const errors = [];
-    let deleted = 0;
-    for (const w of widgets) {
-      if (w.uuid === targetUuid) continue;
-      try { await deleteHeadWidget(card.ip, req.params.headUuid, w.uuid); deleted++; }
-      catch (e) { errors.push(`delete ${w.uuid}: ${e.message}`); }
-    }
-    // Now nothing else exists on the head — fullscreen the survivor.
-    const geo = await setWidgetGeometry(card.ip, req.params.headUuid, targetUuid, { x: 0, y: 0, width: 1, height: 1 });
-    res.json({ ok: true, captured: widgets.length, deleted, confirmed: geo.confirmed, errors });
-  } catch (e) { sendErr(res, e); }
-});
-
-// Restore a soloed head: recreate every deleted widget from the capture and put the survivor
-// back to its original geometry. Recreated widgets get new UUIDs (expected).
-app.post('/api/admin/cards/:cardId/heads/:headUuid/solo-restore', requireAdmin, async (req, res) => {
-  const config = await loadConfig();
-  const card = getCardById(config, req.params.cardId);
-  if (!card) return res.status(404).json({ error: 'Unknown card' });
-  const key = `${req.params.cardId}::${req.params.headUuid}`;
-  const cap = soloCaptures.get(key);
-  if (!cap) return res.status(404).json({ error: 'No solo capture to restore for this head' });
-  try {
-    const errors = [];
-    let recreated = 0, restored = 0;
-    for (const w of cap.widgets) {
-      if (w.uuid === cap.targetUuid) {
-        try { await setWidgetGeometry(card.ip, req.params.headUuid, cap.targetUuid, w.geometry); restored++; }
-        catch (e) { errors.push(`resize target: ${e.message}`); }
-        continue;
-      }
-      try { await createHeadWidget(card.ip, req.params.headUuid, w); recreated++; }
-      catch (e) { errors.push(`recreate ${w.name || w.uuid}: ${e.message}`); }
-    }
-    soloCaptures.delete(key);
-    res.json({ ok: true, recreated, restored, errors });
-  } catch (e) { sendErr(res, e); }
-});
-
-// Whether a solo capture is currently held for a head (so the UI can offer Restore after reload).
-app.get('/api/admin/cards/:cardId/heads/:headUuid/solo-state', requireAdmin, (req, res) => {
-  const cap = soloCaptures.get(`${req.params.cardId}::${req.params.headUuid}`);
-  res.json({ soloed: !!cap, captured: cap ? cap.widgets.length : 0 });
-});
-
-// Toggle a widget's element visibility. Body: { visible: bool }. Tests hiding by transparency
-// instead of geometry.
-app.post('/api/admin/cards/:cardId/heads/:headUuid/widgets/:widgetUuid/visible', requireAdmin, async (req, res) => {
-  const config = await loadConfig();
-  const card = getCardById(config, req.params.cardId);
-  if (!card) return res.status(404).json({ error: 'Unknown card' });
-  const visible = !!(req.body && req.body.visible);
-  try {
-    const out = await setWidgetElementsVisible(card.ip, req.params.headUuid, req.params.widgetUuid, visible);
-    res.json({ ok: true, ...out });
-  } catch (e) { sendErr(res, e); }
-});
-
-// Restore an exact widget order (undo the reorder test). Body: { widgets: [uuid, ...] }.
-app.post('/api/admin/cards/:cardId/heads/:headUuid/order', requireAdmin, async (req, res) => {
-  const config = await loadConfig();
-  const card = getCardById(config, req.params.cardId);
-  if (!card) return res.status(404).json({ error: 'Unknown card' });
-  const widgets = (req.body && Array.isArray(req.body.widgets)) ? req.body.widgets : null;
-  if (!widgets) return res.status(400).json({ error: 'widgets[] (ordered UUID list) is required' });
-  try {
-    const out = await setHeadWidgetOrder(card.ip, req.params.headUuid, widgets);
-    res.json({ ok: true, ...out });
-  } catch (e) { sendErr(res, e); }
-});
-
-
 // hold it for the session so the server can push small JSON messages (currently just
 // { type:'reload' } after a config save). The former per-card board fan-out was removed —
 // the Neuron boards don't expose a consumable WS endpoint (the handshake returns an HTTP
@@ -1163,6 +1083,7 @@ wss.on('connection', (client, req) => {
 
 server.listen(PORT, async () => {
   console.log(`Neuron MV Control listening on :${PORT}`);
+  await loadSoloStore(); // load persisted fullscreen state so isSoloed() is correct from boot
   startShareSweep();
   startBackupScheduler();
   console.log(`Config path: ${process.env.CONFIG_PATH || '/data/config.json'}`);

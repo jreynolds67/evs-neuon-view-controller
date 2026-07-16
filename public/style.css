@@ -312,6 +312,11 @@ body.strip .step .dot { width: 20px; height: 20px; font-size: 11px; }
 }
 .fs-window.editing .fs-win-num { display: none; }
 .fs-window.editing .fs-win-input { display: block; }
+/* Soloed (one window blown up to fullscreen): highlight it and hide the input-number chrome,
+   since source editing is disabled here — the only gesture is press-and-hold to restore. */
+.fs-overlay.soloed .fs-window { border-color: var(--fire); background: rgba(41,209,124,0.10); }
+.fs-overlay.soloed .fs-win-num,
+.fs-overlay.soloed .fs-win-name { display: none; }
 
 /* Focus visibility for accessibility even on touch. */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
