@@ -179,20 +179,26 @@ $('showUuids').addEventListener('change', (e) => {
 const cardHeadsCache = new Map();   // cardId -> [{uuid,name}]
 const cardSnapsCache = new Map();   // cardId -> [{uuid,name}]
 
-async function probeCardHeads(cardId) {
-  if (cardHeadsCache.has(cardId)) return cardHeadsCache.get(cardId);
-  const heads = await fetch(`/api/admin/cards/${encodeURIComponent(cardId)}/heads`, { headers: headers() }).then(r => r.json());
-  const list = Array.isArray(heads) ? heads : [];
-  cardHeadsCache.set(cardId, list);
-  return list;
+// A failed probe MUST throw, never resolve to []. Callers treat an empty list as "the board
+// has no such head" — refreshAllHeadNames/relinkHeadsByName flag every head on the card as
+// missing, which claims a full board restore replaced the head IDs. An unreachable board would
+// otherwise produce that alarm on every head, report zero unreachable cards (nothing threw),
+// and persist bogus `missing` flags on the next Save. Failures are also left UNCACHED, so a
+// retry re-probes instead of being served the failure for the rest of the page's life.
+async function probeCard(cache, cardId, path) {
+  if (cache.has(cardId)) return cache.get(cardId);
+  const res = await fetch(`/api/admin/cards/${encodeURIComponent(cardId)}/${path}`, { headers: headers() });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Card unreachable (HTTP ${res.status})`);
+  }
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error('Card returned an unexpected response');
+  cache.set(cardId, data);
+  return data;
 }
-async function probeCardSnaps(cardId) {
-  if (cardSnapsCache.has(cardId)) return cardSnapsCache.get(cardId);
-  const snaps = await fetch(`/api/admin/cards/${encodeURIComponent(cardId)}/snapshots`, { headers: headers() }).then(r => r.json());
-  const list = Array.isArray(snaps) ? snaps : [];
-  cardSnapsCache.set(cardId, list);
-  return list;
-}
+async function probeCardHeads(cardId) { return probeCard(cardHeadsCache, cardId, 'heads'); }
+async function probeCardSnaps(cardId) { return probeCard(cardSnapsCache, cardId, 'snapshots'); }
 
 // Master-detail: a list of panels on the left, the selected panel's editor on the right.
 let selectedPanel = 0;

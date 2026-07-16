@@ -64,3 +64,17 @@ export async function clearSolo(cardId, headUuid) {
     await persist();
   }
 }
+
+// Drop captures whose head is no longer assigned to any panel (or whose card was removed).
+// Un-solo is only reachable from a panel the head is assigned to, so such a capture can never
+// be restored — it would sit on the volume forever. Called at boot and after every config save.
+// Takes the set of still-valid "<cardId>::<headUuid>" keys rather than the config itself, so
+// this module stays free of a config.js import. Returns how many were dropped.
+export async function pruneSolo(validKeys) {
+  const dead = Object.keys(store).filter((k) => !validKeys.has(k));
+  if (!dead.length) return 0;
+  for (const k of dead) delete store[k];
+  await persist();
+  console.log(`[solo] pruned ${dead.length} capture(s) whose head is no longer assigned: ${dead.join(', ')}`);
+  return dead.length;
+}

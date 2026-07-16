@@ -1,0 +1,14 @@
+# This repo is deployed straight from Git (Portainer builds the image from the checkout), so
+# anything committed here ends up on the box. node_modules must never land in it — the image
+# installs its own deps, and the README's local-dev step tells you to run `npm install`, which
+# would otherwise leave a few thousand files staged for the next `git add .`.
+node_modules/
+
+# macOS Finder metadata
+.DS_Store
+
+# Local config/state. The live config lives on the /data Docker volume, never in the repo —
+# only config/config.example.json (the committed reference template) belongs here.
+config/config.json
+solo-state.json
+backups/

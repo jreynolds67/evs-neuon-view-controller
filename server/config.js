@@ -90,20 +90,18 @@ export function getPanelByIp(config, ip) {
   return (config.panels || []).find((p) => p.ip === ip) || null;
 }
 
-// Panels now assign specific heads directly: panel.heads = [{ cardId, headUuid, label,
-// order, allowedSnapshots }]. Older configs used panel.cardIds + panel.snapshotFilters
-// keyed by "cardId::headUuid". migratePanel() upgrades the old shape on the fly so
-// existing config files keep working — the old fields are preserved but the app reads
-// panel.heads. Note: the old model couldn't know a card's individual heads without
-// probing the board, so a migrated panel starts with NO heads assigned for its cards and
-// the admin re-adds them; any old snapshotFilters are carried into a lookup so they can
-// be reattached if the same card::head is re-added.
+// Panels now assign specific heads directly: panel.heads = [{ cardId, headUuid, label, order }].
+// Older configs used panel.cardIds + panel.snapshotFilters keyed by "cardId::headUuid".
+// migratePanel() upgrades the old shape on the fly so existing config files keep loading.
+//
+// The migration cannot expand cardIds into heads — that needs the card's live head list, which
+// means board access this module doesn't have. So a migrated panel starts with NO heads and the
+// admin re-adds them ("Add all heads" does it in one click). Any old snapshotFilters are simply
+// left on the object, unread: head filtering is global per head now (config.headFilters), so
+// there is nothing to reattach them to.
 export function migratePanel(panel) {
   if (Array.isArray(panel.heads)) return panel; // already new shape
-  const heads = [];
-  // We cannot expand cardIds into heads here (no board access), so leave heads empty and
-  // keep legacy fields available for the admin UI to offer a one-click re-assign.
-  panel.heads = heads;
+  panel.heads = [];
   return panel;
 }
 
@@ -121,10 +119,4 @@ export function resolveAllowedSnapshots(config, panelHead, cardId, headUuid) {
   const filters = config.headFilters || {};
   const list = filters[`${cardId}::${headUuid}`];
   return Array.isArray(list) && list.length ? list : null;
-}
-
-// Read/write the global per-head filter list.
-export function getHeadFilter(config, cardId, headUuid) {
-  const list = (config.headFilters || {})[`${cardId}::${headUuid}`];
-  return Array.isArray(list) ? list : null;
 }

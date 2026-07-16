@@ -9,22 +9,22 @@ import { unlink } from 'node:fs/promises';
 
 import {
   loadConfig, saveConfig, getCardById, getPanelByIp,
-  getPanelHead, resolveAllowedSnapshots, getHeadFilter,
+  getPanelHead, resolveAllowedSnapshots,
 } from './config.js';
 import {
   getSelf, getSnapshotInfo, getSnapshotMeta, getStorageStatus,
   getStorageSync, triggerStorageSync, getHeads,
-  getSnapshotModel, extractSnapshotHeads, restorePartial,
+  extractSnapshotHeads, restorePartial,
   normalizeSnapshotEntry, getHeadWidgets, normalizeWidgetForPreview,
-  extractSnapshotHeadWidgets, getSnapshotModelCached, buildSnapshotWidgetIndex,
+  getSnapshotModelCached, buildSnapshotWidgetIndex,
   getInputGroups, setWidgetGroup,
   deleteHeadWidget, createHeadWidget, setWidgetFull, setWidgetFullscreenVideoOnly,
 } from './board.js';
-import { loadSoloStore, isSoloed, getSolo, setSolo, clearSolo } from './solostore.js';
+import { loadSoloStore, isSoloed, getSolo, setSolo, clearSolo, pruneSolo } from './solostore.js';
 import { getEntries, clear as clearLog, log } from './logger.js';
 import { startShareSweep, shareSweepStatus, runShareSweepNow, applyShareSweepConfig } from './sharesweep.js';
 import {
-  startBackupScheduler, runBackupNow, backupStatus, listBackups, backupFilePath,
+  startBackupScheduler, runBackupNow, backupStatus, listBackups, backupFilePath, hhmmToMinutes,
 } from './backup.js';
 import {
   verifyPassword, createSession, touchSession, destroySession,
@@ -125,6 +125,21 @@ function sendPanelErr(res, e) {
 // Authorization helper: does this panel have this exact card+head assigned?
 function panelAuthorizesHead(panel, cardId, headUuid) {
   return !!getPanelHead(panel, cardId, headUuid);
+}
+
+// Every "<cardId>::<headUuid>" still reachable from some panel — i.e. assigned to a panel AND
+// on a card that still exists. This is exactly the set of heads a solo capture can still be
+// restored from, so it's what prunes the solo store (see pruneSolo).
+function assignedHeadKeys(config) {
+  const keys = new Set();
+  for (const p of config.panels || []) {
+    for (const h of p.heads || []) {
+      if (h && h.cardId && h.headUuid && getCardById(config, h.cardId)) {
+        keys.add(`${h.cardId}::${h.headUuid}`);
+      }
+    }
+  }
+  return keys;
 }
 
 // Resolve panel + card + assigned head for a panel-facing request, or send an error and
@@ -505,7 +520,7 @@ app.get('/api/panel/cards/:cardId/snapshots/:snapUuid/previews', async (req, res
 app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res) => {
   const config = await loadConfig();
   const panel = getPanelByIp(config, clientIp(req));
-  const { snapshotHeadUuid, targetHeadUuid } = req.body || {};
+  const { snapshotHeadUuid, targetHeadUuid, showAll } = req.body || {};
   if (!snapshotHeadUuid || !targetHeadUuid) {
     return res.status(400).json({ error: 'snapshotHeadUuid and targetHeadUuid are required' });
   }
@@ -518,7 +533,15 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
   if (!card) return res.status(404).json({ error: 'That card is no longer available — go back and try again, or ask an engineer.' });
 
   // Re-check the snapshot is actually permitted for this head before firing.
-  const allow = resolveAllowedSnapshots(config, panelHead, req.params.cardId, targetHeadUuid);
+  // "Show all" bypasses the per-head filter here exactly as it does on the snapshot LIST, and
+  // under the same rule: the client must ask for it AND the panel must be configured to allow
+  // it (allowShowAll is admin-granted per panel). The two must agree — when only the list
+  // honoured the override, an operator could browse to a filtered-out snapshot under "Show all"
+  // and then be refused at Load with a bare 403, a dead end with no way forward.
+  const showAllOk = showAll === true && panel.allowShowAll === true;
+  const allow = showAllOk
+    ? null
+    : resolveAllowedSnapshots(config, panelHead, req.params.cardId, targetHeadUuid);
   if (allow && !allow.includes(req.params.snapUuid)) {
     return res.status(403).json({ error: 'This snapshot isn’t allowed for this head — go back and pick another, or ask an engineer to allow it.' });
   }
@@ -592,11 +615,23 @@ app.post('/api/panel/cards/:cardId/heads/:headUuid/solo', async (req, res) => {
   const { cardId, headUuid } = req.params;
   const { targetWidgetUuid } = req.body || {};
   if (!targetWidgetUuid) return res.status(400).json({ error: 'targetWidgetUuid is required' });
-  if (isSoloed(cardId, headUuid)) return res.status(409).json({ error: 'This head is already fullscreen.' });
   try {
     const widgets = await getHeadWidgets(card.ip, headUuid);
     if (!widgets.some((w) => w.uuid === targetWidgetUuid)) {
       return res.status(404).json({ error: 'That window is no longer on this head — please try again.' });
+    }
+    // A head holds exactly ONE capture, and a new solo replaces it — but only when the old one
+    // is dead. Staleness test is the same one un-solo uses: if the captured survivor is gone,
+    // the head was rebuilt externally (native GUI, or a recall this app never saw), so the
+    // capture can no longer restore anything and the fresh one takes its place.
+    //
+    // If the survivor IS still there the head really is soloed, and overwriting would capture
+    // the single fullscreen window AS the "original" — destroying the real mosaic permanently,
+    // since un-solo would then only ever restore the fullscreen. Refuse instead; the client
+    // offers restore (not solo) on a soloed head anyway, so this is the backstop for a race.
+    const existing = getSolo(cardId, headUuid);
+    if (existing && widgets.some((w) => w.uuid === existing.targetUuid)) {
+      return res.status(409).json({ error: 'This head is already fullscreen.' });
     }
     // Persist the FULL current layout BEFORE any destructive change, so restore is always
     // possible even across a redeploy. If this throws, nothing has been deleted yet.
@@ -782,7 +817,14 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
   // re-apply their schedulers so changes take effect immediately.
   if (next.backup && typeof next.backup === 'object') {
     const b = next.backup;
-    const hhmm = /^\d{2}:\d{2}$/.test(b.timeHHMM) ? b.timeHHMM : '03:00';
+    // Reject a bad time rather than silently substituting 03:00. Quietly rewriting it meant a
+    // mistyped time saved "successfully" and then backed up at an hour nobody chose, with no
+    // warning anywhere. The dedicated /api/admin/backup endpoint already 400s on this; the two
+    // save paths must agree.
+    if (b.timeHHMM !== undefined && b.timeHHMM !== '' && hhmmToMinutes(b.timeHHMM) === null) {
+      return res.status(400).json({ error: `Backup time "${b.timeHHMM}" isn’t a valid 24-hour time (HH:MM).` });
+    }
+    const hhmm = b.timeHHMM || '03:00';
     next.backup = {
       enabled: !!b.enabled,
       cardId: typeof b.cardId === 'string' ? b.cardId : '',
@@ -809,6 +851,10 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
   }
 
   await saveConfig(next);
+  // Unassigning a head (or removing its card) makes any solo capture it holds unrestorable —
+  // un-solo is only reachable from a panel the head is assigned to. Drop those now rather than
+  // leaving them on the volume forever.
+  try { await pruneSolo(assignedHeadKeys(next)); } catch (e) { console.warn('[solo] prune failed:', e.message); }
   // Re-apply the sweep scheduler from the just-saved config so a change takes effect now.
   // (The backup scheduler re-reads config every minute, so it needs no explicit reschedule.)
   if (next.shareSweep) { try { await applyShareSweepConfig(); } catch (e) { console.warn('[sharesweep] apply failed:', e.message); } }
@@ -901,8 +947,9 @@ app.get('/api/admin/backup', requireAdmin, async (_req, res) => {
 
 app.put('/api/admin/backup', requireAdmin, async (req, res) => {
   const { enabled, cardId, timeHHMM, retentionCount, configRetentionDays } = req.body || {};
-  if (timeHHMM && !/^\d{2}:\d{2}$/.test(timeHHMM)) {
-    return res.status(400).json({ error: 'timeHHMM must be HH:MM' });
+  // Validate against the same rule the scheduler fires on, so a time that stores can always run.
+  if (timeHHMM && hhmmToMinutes(timeHHMM) === null) {
+    return res.status(400).json({ error: `Backup time "${timeHHMM}" isn’t a valid 24-hour time (HH:MM).` });
   }
   const config = await loadConfig();
   const prev = config.backup || {};
@@ -1132,5 +1179,8 @@ server.listen(PORT, async () => {
       console.log('WARNING: no admin credential configured — admin login is unavailable until '
         + 'config.admin.{user,passwordHash} is set. Generate a hash with: node server/auth.js "password"');
     }
+    // Catch captures orphaned by a config hand-edit while the container was down (the save-time
+    // prune can't see those).
+    await pruneSolo(assignedHeadKeys(cfg));
   } catch {}
 });

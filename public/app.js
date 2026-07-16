@@ -10,6 +10,11 @@ const state = {
   srcHead: null,  // snapshot source head { uuid, name }
   showUuids: true,
   showAllActive: false, // temporary "Show all" override on the snapshot step
+  // Whether the CHOSEN snapshot was reached under that override. showAllActive is cleared the
+  // moment we leave the snapshot step, so it can't be read at Load time — but the restore has
+  // to tell the server the pick came from "Show all", or the server re-applies the per-head
+  // filter and refuses it.
+  snapViaShowAll: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -221,6 +226,7 @@ async function renderHeads() {
   state.step = 'head'; setSteps();
   state.head = null; state.snap = null; state.srcHead = null;
   state.showAllActive = false; // heads view always starts from the filtered state
+  state.snapViaShowAll = false;
   clearShowAllButton();        // the footer toggle only belongs on the snapshot step
   $('stageTitle').textContent = 'Select a head';
   $('stageHint').textContent = '';
@@ -369,6 +375,7 @@ async function pickSnapshot(s) {
   const token = bumpNav();
   state.snap = s;
   state.srcHead = null;
+  state.snapViaShowAll = state.showAllActive; // remember it BEFORE the override is cleared
   state.showAllActive = false; // clicking into a snapshot reverts the temporary override
   clearShowAllButton();        // leaving the snapshot step hides the footer toggle
   try {
@@ -468,6 +475,7 @@ async function fire() {
       body: JSON.stringify({
         snapshotHeadUuid: state.srcHead.uuid,
         targetHeadUuid: state.head.headUuid,
+        showAll: state.snapViaShowAll === true,
       }),
     });
     $('overlay').classList.remove('show');
@@ -559,7 +567,6 @@ function startBkBannerPolling() {
 // ---- Live status ----------------------------------------------------------
 
 let previewPollTimer = null;   // interval that refreshes head previews on the heads view
-let previewRefreshTimer = null;
 
 // Keep head previews current while the heads view is showing. The Neuron boards don't emit
 // a usable WebSocket event on a partial restore, so instead of relying on a live push we

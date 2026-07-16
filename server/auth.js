@@ -86,7 +86,12 @@ export function parseCookies(req) {
     if (i < 0) return;
     const k = pair.slice(0, i).trim();
     const v = pair.slice(i + 1).trim();
-    if (k) out[k] = decodeURIComponent(v);
+    if (!k) return;
+    // decodeURIComponent throws on a malformed escape (e.g. "nmv_admin=%zz"). That must not
+    // take down an admin route: requireAdmin and the /admin page call this synchronously, so a
+    // throw here surfaces as a 500 instead of a clean 401/redirect. Keep the raw value — a
+    // session id is hex, so an un-decodable one simply matches nothing and fails auth normally.
+    try { out[k] = decodeURIComponent(v); } catch { out[k] = v; }
   });
   return out;
 }

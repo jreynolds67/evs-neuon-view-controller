@@ -4,10 +4,17 @@
 // volume, and prunes anything older than the retention window.
 //
 // Config lives in the main config file under config.backup:
-//   { enabled, cardId, timeHHMM: "03:00", retentionDays: 30 }
+//   { enabled, cardId, timeHHMM: "03:00", retentionCount: 30, configRetentionDays: 30 }
+// (retentionDays is a legacy field name still read as a fallback for retentionCount.)
+//
+// Retention is two independent rules — see prune(): board archives are kept by COUNT of recent
+// backup dates, config snapshots by calendar AGE.
 //
 // Files are written to BACKUP_DIR (default /data/backups) as:
-//   <date>__<cardLabel>__<folder-or-all>.bin
+//   <stamp>__<cardLabel>__all<ext>          whole-board archive (ext from the board)
+//   <stamp>__<cardLabel>__<folder><ext>     per-folder fallback when the whole-board export fails
+//   <stamp>__<cardLabel>__individual.zip    per-snapshot bundle
+//   <stamp>__config.json                    this app's config, minus the admin credential
 
 import { readdir, mkdir, writeFile, rename, unlink, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -45,6 +52,18 @@ async function sweepTmp() {
       }
     }
   } catch {}
+}
+
+// "HH:MM" -> minutes-of-day, or null if it isn't a real 24-hour time. Exported so the admin
+// endpoints validate with the SAME rule the scheduler fires on. A shape-only check (/^\d{2}:\d{2}$/)
+// isn't enough: "29:99" passes it, stores fine, and then the scheduler can never match it — a
+// backup that silently never runs.
+export function hhmmToMinutes(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm || '');
+  if (!m) return null;
+  const h = +m[1], mi = +m[2];
+  if (h > 23 || mi > 59) return null;
+  return h * 60 + mi;
 }
 
 function safe(s) {
@@ -361,14 +380,7 @@ export function backupFilePath(file) {
 let lastRunDate = null;
 export function startBackupScheduler() {
   sweepTmp(); // clear any temp files left by a backup interrupted mid-write
-  // Parse "HH:MM" to minutes-of-day; null if malformed.
-  const toMinutes = (hhmm) => {
-    const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm || '');
-    if (!m) return null;
-    const h = +m[1], mi = +m[2];
-    if (h > 23 || mi > 59) return null;
-    return h * 60 + mi;
-  };
+  const toMinutes = hhmmToMinutes;
   const tick = async () => {
     status.nextCheck = Date.now();
     const config = await loadConfig();

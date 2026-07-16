@@ -681,21 +681,6 @@ export function extractSnapshotHeads(model) {
   return found;
 }
 
-// Extract the widget layout for ONE head inside a snapshot model, normalized for the
-// preview renderer. Heads reference widgets by UUID (HeadGet.widgets is a string array),
-// while the full widget definitions live elsewhere in the model — so we build a lookup of
-// every widget-shaped object, then resolve the target head's referenced widgets.
-// Falls back to any widget objects nested directly under the head if references don't
-// resolve. Shape is board-specific and undocumented, so this stays tolerant.
-export function extractSnapshotHeadWidgets(model, headUuid) {
-  const root = (model && typeof model.data === 'string')
-    ? (() => { try { return JSON.parse(model.data); } catch { return model.data; } })()
-    : (model && model.__isRoot ? model.root : model);
-  const { headWidgets } = buildSnapshotWidgetIndex(root);
-  const w = headWidgets.get(headUuid);
-  return w ? { widgets: w, resolved: w.length > 0 } : { widgets: [], resolved: false };
-}
-
 // Build, in ONE pass over the model, a map of headUuid -> normalized widgets for every
 // head. This lets a single model fetch+parse serve previews for all source heads at once
 // instead of re-walking the blob per head.

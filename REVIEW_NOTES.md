@@ -38,7 +38,7 @@ widget UUIDs (heads are bound by UUID; widgets are not). If that ever changes, s
 
 ## 2. What to scrutinize
 
-### `runPool` is best-effort, and that used to hide a real bug (`server/index.js:573`)
+### `runPool` is best-effort, and that used to hide a real bug (`server/index.js:598`)
 
 `runPool` does not abort the run when one widget's write fails — one hiccuping widget
 shouldn't stop a whole solo/restore. That part is deliberate and unchanged. But until
@@ -66,7 +66,7 @@ would match none of them against the capture and duplicate the mosaic. Partial r
 dead end by design; the operator is told to recall a snapshot. Don't "fix" this by making
 un-solo retryable without solving the UUID problem first.
 
-### The capture is persisted *before* the deletes (`server/index.js:599`)
+### The capture is persisted *before* the deletes (`server/index.js:638`)
 
 Deliberate, for crash safety: if the process dies mid-solo, the layout is recoverable. The
 cost is a **transient state where the store says `soloed: true` but the head still holds
@@ -133,12 +133,12 @@ nvm's **v18** and will not boot the app — but there is a **v24 at `/opt/homebr
 that runs it fine. If you hit `ERR_MODULE_NOT_FOUND` or a `crc32` error, you're on the wrong
 Node, not looking at a real failure.
 
-## 5. Loose end worth fixing
+## 5. Loose end worth fixing — FIXED
 
-`package.json` declares `"engines": { "node": ">=20" }`, but the true floor is **20.15**
-(see above). The Dockerfile pins `node:20.19-alpine` so deployments are fine — but the
-declared engine range would happily accept a 20.0–20.14 runtime that crashes on boot.
-`>=20.15` would be honest.
+`package.json` declared `"engines": { "node": ">=20" }`, but the true floor is **20.15** (see
+above): the declared range would have accepted a 20.0–20.14 runtime that crashes on boot. Now
+`>=20.15`. The Dockerfile's `node:20.19-alpine` pin was always fine; this only closes the gap
+for anyone running it outside the container.
 
 ## 6. Deliberately not addressed
 
@@ -150,12 +150,47 @@ oversights:
 - **Backups held in memory** during export — fine at the ~500 MB card storage ceiling.
 - **Solo/un-solo has no per-head lock.** There is no mutex anywhere in the solo path, so
   concurrent operations on the *same head* can race. The realistic one: un-solo reads the
-  capture at `index.js:615` and doesn't clear it until after every recreate finishes
-  (`index.js:632`) — seconds on a big mosaic. A second panel entering un-solo in that window
+  capture at `index.js:664` and doesn't clear it until after every recreate finishes
+  (`index.js:688`) — seconds on a big mosaic. A second panel entering un-solo in that window
   gets the same capture, passes the same staleness guard, and recreates the whole mosaic
-  again. There's also a narrower solo/solo race that can lose a capture outright.
-  **Declined:** the owner has tested multi-user conflicts without observing problems, and
-  judges two operators hold-to-restoring the same head within the same restore to be outside
-  real operating patterns. Worth knowing the window is real if duplicated windows ever show
-  up in the wild — a per-head promise-chain lock (~10 lines, wrapping both handlers with the
-  `isSoloed` check moved inside) is the fix, and it's independent of everything in §2.
+  again. **Declined:** the owner has tested multi-user conflicts without observing problems,
+  and judges two operators hold-to-restoring the same head within the same restore to be
+  outside real operating patterns. Worth knowing the window is real if duplicated windows ever
+  show up in the wild — a per-head promise-chain lock (~10 lines, wrapping both handlers with
+  the capture check moved inside) is the fix, and it's independent of everything in §2.
+
+  The narrower **solo/solo** race is now much smaller, as a side effect of the one-capture-per-head
+  rule (§7): solo reads the live widgets *before* deciding, so a second solo landing on the same
+  head either sees the first's capture with its survivor still present (→ 409) or finds its own
+  target already deleted (→ 404). It isn't a lock, so it isn't airtight, but the interleaving
+  that silently overwrote a good capture with a half-deleted mosaic no longer has an easy path.
+
+---
+
+## 7. One capture per head — and why solo refuses instead of overwriting
+
+A head holds exactly one capture (the store is keyed `<cardId>::<headUuid>`), and both ends of
+its lifecycle are deliberate:
+
+**A new solo replaces an existing capture only if that capture is STALE.** Staleness is the same
+test un-solo uses: the captured survivor widget is gone from the live head, so the head was
+rebuilt externally and the capture can't restore anything anyway. If the survivor *is* still
+there, solo returns 409 rather than overwriting.
+
+That refusal is load-bearing, and it looks like timidity if you don't see the failure it
+prevents. Re-soloing a genuinely soloed head would capture the head's *current* contents — a
+single fullscreen window — **as the original mosaic**. The real mosaic is then gone for good:
+un-solo would faithfully restore one fullscreen window, and no retry helps, because the capture
+that knew about the other windows was overwritten. The head is stuck until someone recalls a
+snapshot. Don't "simplify" this to an unconditional `setSolo`.
+
+The client already calls un-solo (not solo) on a soloed head — it keys that off the raw server
+`soloed` flag, precisely so a partially-failed solo still restores (§3). So the 409 is a backstop
+for a race, not a path operators hit normally.
+
+**Orphaned captures are pruned** on config save and at boot: if a head is no longer assigned to
+any panel (or its card was removed), no one can reach un-solo for it, so its capture is dead
+weight on the volume. The prune takes the set of still-assigned `<cardId>::<headUuid>` keys, so
+`solostore.js` stays free of a `config.js` import. Note the tradeoff the owner chose knowingly:
+unassigning a head **discards** its capture, so a head unassigned *while soloed* can't be
+recovered by re-assigning it later — recall a snapshot instead.

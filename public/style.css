@@ -16,6 +16,13 @@
   --danger: #ff4d4d;
   --radius: 10px;
   --touch: 76px;          /* minimum touch target height */
+  /* System fonts, deliberately. This runs on a closed broadcast LAN with no route to the
+     internet, so the old Google Fonts <link> could never load — and a render-blocking
+     stylesheet stalls every panel load until it times out, including the forced reload
+     broadcast after each config save. No webfont is worth that. (--mono is also read by
+     admin.html.) */
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   font-synthesis: none;
 }
 
@@ -23,12 +30,12 @@
 html, body {
   margin: 0; height: 100%;
   background: var(--bg); color: var(--ink);
-  font-family: "IBM Plex Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
+  font-family: var(--sans);
   -webkit-user-select: none; user-select: none;
   overflow: hidden;
 }
 h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: 0.01em; }
-.mono { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; }
+.mono { font-family: var(--mono); }
 
 /* ---- App shell ---- */
 .app { display: flex; flex-direction: column; height: 100%; }
@@ -136,8 +143,8 @@ body.strip .group-head { padding: 4px 2px 2px; font-size: 11px; }
 .preview-widget { fill: rgba(255,255,255,0.02); stroke: var(--line); stroke-width: 1; }
 .preview-el { stroke-width: 1; }
 .preview-bar { fill: var(--arm); opacity: 0.8; }
-.preview-label { fill: var(--ink); font-size: 9px; font-family: "IBM Plex Sans", sans-serif; }
-.preview-empty-text { fill: var(--ink-faint); font-size: 12px; font-family: "IBM Plex Sans", sans-serif; }
+.preview-label { fill: var(--ink); font-size: 9px; font-family: var(--sans); }
+.preview-empty-text { fill: var(--ink-faint); font-size: 12px; font-family: var(--sans); }
 .preview-loading { color: var(--ink-faint); font-size: 12px; }
 .preview-note { font-size: 11px; color: var(--ink-dim); padding: 4px 8px; text-align: center; }
 .preview-note.err { color: var(--danger); }

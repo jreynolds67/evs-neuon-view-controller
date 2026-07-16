@@ -21,7 +21,7 @@ restore — that path does not exist in the code.
 - [Configuration reference](#configuration-reference)
 - [Admin login](#admin-login)
 - [Install & deploy](#install--deploy)
-- [Networking (macvlan)](#networking-macvlan)
+- [Networking (ipvlan / macvlan)](#networking-ipvlan--macvlan)
 - [Environment variables](#environment-variables)
 - [Local development](#local-development)
 - [Operational notes & hardware quirks](#operational-notes--hardware-quirks)
@@ -129,7 +129,10 @@ source head it couldn't parse. Note this particular block is client-side: the re
 endpoint doesn't re-check `snapshotHeadUuid` against the parsed model. That is not a hole in
 the partials-only guarantee, which is structural and server-side (above) — an unparseable or
 bogus source head is simply rejected by the board. The per-head **snapshot filter**, by
-contrast, *is* re-enforced server-side at restore time.
+contrast, *is* re-enforced server-side at restore time — including its one exception: a restore
+may bypass the filter only when the client asks for the "Show all" override **and** the panel
+has `allowShowAll` set. Both halves are checked server-side against stored config, so a panel
+can't grant itself the override.
 
 **Heads are bound by UUID** everywhere (panel assignments, layout grid, snapshot filters).
 This is rename-safe — renaming a head on the board keeps every binding intact. The tradeoff
@@ -184,6 +187,16 @@ the head was rebuilt externally (e.g. the native GUI) it drops the stale capture
 duplicating windows onto the new layout. Solo/restore invalidate the head's preview cache so the
 change shows immediately.
 
+A head holds **exactly one capture**, and its lifecycle is closed on both ends:
+
+- A **new solo replaces** an existing capture only when that capture is stale (its survivor
+  widget is gone from the head). If the head is genuinely soloed, solo is refused — overwriting
+  would capture the single fullscreen window *as* the original and lose the real mosaic for good.
+- Captures whose head is **no longer assigned to any panel** (or whose card was removed) are
+  **pruned** on config save and at boot. Un-solo is only reachable from a panel the head is
+  assigned to, so such a capture could never be restored and would otherwise sit on the volume
+  forever.
+
 ## Configuration reference
 
 All config is a single JSON file on the Docker volume at `/data/config.json`. No database.
@@ -201,7 +214,7 @@ Top-level keys (all siblings):
 | `panelGroups` | Ordered array of group names for the admin panel list. |
 | `headFilters` | Map of `"cardId::headUuid"` → allowed snapshot UUIDs. Empty = all allowed. |
 | `settings` | Misc UI settings (e.g. `showUuids`). |
-| `backup` | Scheduled backup config: `{ enabled, cardId, timeHHMM, retentionDays }`. Managed on its own tab. |
+| `backup` | Scheduled backup config: `{ enabled, cardId, timeHHMM, retentionCount, configRetentionDays }`. Managed on its own tab. (`retentionDays` is a legacy name still read as a fallback for `retentionCount`.) |
 | `shareSweep` | Auto-share sweep config. Managed on its own tab. |
 
 `admin` is **server-authoritative**: it is never sent to the client and never accepted from
@@ -219,6 +232,11 @@ silently reverts anything the first changed. Admin from one place at a time.
 In the admin **Heads** tab, pick a card and expand a head, then tick which snapshots are
 allowed — grouped by folder, with a per-folder select-all. Untouched heads allow all
 snapshots. Filters are enforced again server-side at restore time, not just in the UI.
+
+A panel with **"Allow show all"** enabled can toggle the filter off for the snapshot step and
+recall anything on the card — the override covers browsing *and* loading. It reverts on any
+navigation, so it never sticks. Panels without the flag can't request it: the server checks
+`allowShowAll` against stored config on both the list and the restore.
 
 ### Snapshot list behavior
 
@@ -364,7 +382,12 @@ CONFIG_PATH=./config/config.json npm start
 #                                              machine's IP matches a configured panel IP)
 ```
 
-There is no build step — the frontend is plain HTML/CSS/JS served straight from `public/`.
+There is no build step — the frontend is plain HTML/CSS/JS served straight from `public/`, and
+no webfonts are fetched (system font stack), so the UI renders fully on a closed network.
+
+`npm install` writes `node_modules/` into the checkout. This repo is **deployed from Git**, so
+that must never be committed — `.gitignore` covers it (along with `.DS_Store` and any local
+config/state). Check `git status` is clean of it before committing.
 
 ## Operational notes & hardware quirks
 
@@ -419,6 +442,11 @@ private/
                 as a static file, so there's no static path to bypass the login gate
 config/
   config.example.json   Reference config shape
+api 1-10.yaml           Neuron View API spec, firmware 1.10
+api 1-13.yaml           Neuron View API spec, firmware 1.13 (what the boards run now)
+REVIEW_NOTES.md         Reviewer context for the fullscreen ("solo") feature — read before
+                        judging its capture/delete/recreate design
 Dockerfile
 docker-compose.yml
+.gitignore              Keeps node_modules out of the Git-backed deploy (see Local development)
 ```

@@ -8,13 +8,57 @@
     { "id": "mv2", "label": "MV Card 2", "ip": "10.10.60.22" },
     { "id": "mv3", "label": "MV Card 3", "ip": "10.10.60.23" }
   ],
+  "panelGroups": ["Production Control"],
   "panels": [
     {
       "ip": "10.10.61.11",
       "label": "PCR 101 Panel",
       "layout": "1080",
-      "cardIds": ["mv1", "mv2", "mv3"],
-      "snapshotFilters": {}
+      "group": "Production Control",
+      "allowShowAll": false,
+      "heads": [
+        {
+          "cardId": "mv1",
+          "headUuid": "8f14e45f-ceea-467a-9c1f-8b3a4c2d1e05",
+          "boardName": "PGM 1",
+          "label": "Programme",
+          "order": 0
+        },
+        {
+          "cardId": "mv1",
+          "headUuid": "3c6e0b8a-9c15-4b1a-8a2f-7d4e5f6a7b8c",
+          "boardName": "PVW 1",
+          "label": "Preview",
+          "order": 1
+        }
+      ],
+      "layoutGrid": [
+        { "type": "head", "cardId": "mv1", "headUuid": "8f14e45f-ceea-467a-9c1f-8b3a4c2d1e05" },
+        { "type": "head", "cardId": "mv1", "headUuid": "3c6e0b8a-9c15-4b1a-8a2f-7d4e5f6a7b8c" },
+        { "type": "blank" },
+        { "type": "blank" },
+        { "type": "blank" },
+        { "type": "blank" },
+        { "type": "blank" }
+      ]
     }
-  ]
+  ],
+  "headFilters": {
+    "mv1::8f14e45f-ceea-467a-9c1f-8b3a4c2d1e05": [
+      "d41d8cd9-8f00-4204-a980-0998ecf8427e"
+    ]
+  },
+  "settings": { "showUuids": true },
+  "backup": {
+    "enabled": false,
+    "cardId": "mv1",
+    "timeHHMM": "03:00",
+    "retentionCount": 30,
+    "configRetentionDays": 30
+  },
+  "shareSweep": {
+    "enabled": false,
+    "intervalSec": 60,
+    "targets": []
+  }
 }
