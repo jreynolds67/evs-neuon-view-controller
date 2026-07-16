@@ -1616,9 +1616,18 @@ $('bkRun').addEventListener('click', async () => {
   if (!config.backup || !config.backup.cardId) { $('bkState').textContent = 'Pick a board first.'; return; }
   $('bkState').textContent = 'Saving & backing up… (may take a moment)';
   try {
-    // Persist current settings via the main config save so the run uses exactly what's on
-    // screen (backup settings are now part of the main config, no separate endpoint).
-    await saveConfig();
+    // Persist ONLY the backup settings, through their own endpoint, so the run uses exactly
+    // what's on screen. Deliberately NOT the main config save: that PUT commits every other
+    // unsaved edit on the page and broadcasts a reload to EVERY operator panel — an on-air
+    // side effect a maintenance action must never have.
+    const r = await fetch('/api/admin/backup', {
+      method: 'PUT', headers: headers(), body: JSON.stringify(config.backup),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+    // Adopt the server's normalised values (retention clamping, time default) so a later main
+    // Save doesn't push the un-normalised screen values back over them.
+    const saved = await r.json();
+    if (saved && saved.config) config.backup = saved.config;
     const s = await fetch('/api/admin/backup/run', { method: 'POST', headers: headers() }).then(r => r.json());
     $('bkState').textContent = s.lastError ? `Error: ${s.lastError}` : `Wrote ${(s.lastFiles || []).length} file(s)`;
     // Refresh only the file list, not the whole form, so the selection is preserved.
