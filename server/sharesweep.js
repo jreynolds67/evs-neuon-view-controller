@@ -22,7 +22,7 @@ const SYNC_TRIGGER_STAGGER_MS = 1000;
 // boards have settled from the metadata writes (each PUT is async and leaves a board in
 // 'updating-file') before we ask them to sync.
 const SYNC_TRIGGER_DELAY_MS = 6000;
-const status = { lastRun: null, lastError: null, shared: 0, checked: 0, enabled: false, targets: [] };
+const status = { lastRun: null, lastError: null, shared: 0, checked: 0, failed: 0, enabled: false, targets: [] };
 
 function resolveTargets(config) {
   const cfg = config.shareSweep || {};
@@ -40,7 +40,7 @@ function resolveTargets(config) {
 async function sweepOnce() {
   if (running) return;
   running = true;
-  let shared = 0, checked = 0;
+  let shared = 0, checked = 0, failed = 0;
   try {
     const config = await loadConfig();
     const targets = resolveTargets(config);
@@ -57,7 +57,11 @@ async function sweepOnce() {
       for (const e of entries) {
         checked++;
         if (e.shared === true) continue;
-        try { await setSnapshotShared(t.ip, e, true); shared++; } catch {}
+        // A failed PUT is non-fatal (next sweep retries), but it must be COUNTED: a snapshot
+        // whose share write is rejected every cycle is exactly the failure being diagnosed on
+        // these boards, and "shared N, checked M" with no failure count reads as a clean run.
+        // (boardFetch logs each individual failure to the activity log.)
+        try { await setSnapshotShared(t.ip, e, true); shared++; } catch { failed++; }
         // Pace the writes. On 1.13 the metadata PUT is async (202) and puts the board into
         // 'updating-file'; firing them back-to-back stacks writes onto a board still
         // processing the previous one. A small gap costs nothing (this is a background
@@ -69,7 +73,9 @@ async function sweepOnce() {
     status.lastError = null;
     status.shared = shared;
     status.checked = checked;
+    status.failed = failed;
     if (shared) console.log(`[share-sweep] shared ${shared} snapshot(s) across ${targets.length} target(s)`);
+    if (failed) console.warn(`[share-sweep] ${failed} share write(s) FAILED this sweep`);
 
     // Newly shared something → trigger a native sync on EVERY target so the change propagates
     // promptly instead of waiting out the board's (now longer) native sync interval. Staggered

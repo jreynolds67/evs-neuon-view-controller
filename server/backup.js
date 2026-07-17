@@ -29,9 +29,13 @@ let timer = null;
 let backupRunning = false; // guards against concurrent runs (manual during scheduled, etc.)
 const status = {
   lastRun: null, lastError: null, lastFiles: [], nextCheck: null,
+  // Label of the card the last run targeted (or the raw IP if the target wasn't a defined
+  // card). Lets error reporting name the card by label instead of leaking its board IP.
+  lastTargetLabel: null,
   // Set ONLY by the scheduler (not manual runs) when a scheduled backup fails to produce a
   // board archive. Drives the persistent banner on operator panels. Shape:
-  //   { at: <ms>, reason: 'export' | 'empty' | 'target' | 'error', message: <string> }
+  //   { at: <ms>, reason: 'export' | 'empty' | 'target' | 'error', message: <string>,
+  //     cardLabel: <string|null> }
   // Cleared to null when a scheduled run produces a board archive.
   scheduledFailure: null,
 };
@@ -91,7 +95,10 @@ function fileStamp() {
 export async function runBackupNow() {
   if (backupRunning) {
     console.log('[backup] run requested but one is already in progress — skipped');
-    return { ...status, lastError: 'A backup is already running; this request was skipped.' };
+    // `skipped` tells the caller nothing ran — everything else in this object describes the
+    // PREVIOUS run. The scheduler must check it: classifying yesterday's lastFiles/lastError
+    // as today's outcome would clear (or set) the operator banner for a run that never happened.
+    return { ...status, skipped: true, lastError: 'A backup is already running; this request was skipped.' };
   }
   backupRunning = true;
   try {
@@ -103,6 +110,13 @@ export async function runBackupNow() {
 
 async function runBackupInternal() {
   await ensureDir();
+  // Reset the per-run fields up front. Without this, a run whose failures are all swallowed
+  // (whole-board export threw, every per-folder fallback threw) falls through to the
+  // "if (!status.lastError)" default below still holding the PREVIOUS run's message — and the
+  // scheduler then classifies this run's banner from last time's error text.
+  status.lastError = null;
+  status.lastFiles = [];
+  status.lastTargetLabel = null;
   const config = await loadConfig();
   const date = fileStamp();
   const written = [];
@@ -135,6 +149,9 @@ async function runBackupInternal() {
     status.lastFiles = written.slice();
     return status;
   }
+  // Capture the display form BEFORE filename-sanitising: this is what error reporting and the
+  // operator banner show, so "MV Card 3" must stay "MV Card 3", not become "MV_Card_3".
+  status.lastTargetLabel = label;
   label = safe(label);
 
   // Detect an export response that's actually JSON (error/manifest) rather than a real
@@ -266,7 +283,14 @@ async function runBackupInternal() {
       console.log('[backup] skipping retention prune — no valid board backup produced this run');
     }
   } catch (e) {
-    status.lastError = e.message;
+    // Board-layer errors embed the board IP ("fetch failed (...) for 10.x.x.x/snapshots").
+    // This message flows to the scheduled-failure record and out to operator panels, where
+    // board IPs are deliberately never shown — name the card by its label instead. (When the
+    // target was configured as a raw IP, label IS the IP and this is a no-op; the panel
+    // endpoint separately refuses to forward an IP-shaped label.)
+    status.lastError = ip
+      ? String(e.message || e).split(ip).join(status.lastTargetLabel || label)
+      : (e.message || String(e));
     status.lastRun = Date.now();
     // The board part failed, but the config copy at the top succeeded — record it so the
     // run still shows a restore point rather than looking like it produced nothing.
@@ -395,9 +419,17 @@ export function startBackupScheduler() {
     // prior backup) still triggers today's run instead of silently skipping 24 hours. The
     // per-day guard (lastRunDate) ensures it only runs once.
     if (nowMin >= target && lastRunDate !== dateStr) {
-      lastRunDate = dateStr;
       console.log(`[backup] scheduled trigger (target ${bcfg.timeHHMM}, now ${p2(now)})`);
       const result = await runBackupNow();
+      // A skipped run (another backup — likely a manual one — held the guard) is NOT today's
+      // scheduled backup: leave lastRunDate unstamped so the next minute tick retries, and
+      // don't classify — the result object describes the PREVIOUS run, so judging it here
+      // would set or clear the operator banner for a run that never happened. Stamping the
+      // day only after a real run also keeps the once-per-day guarantee: a long run spanning
+      // several ticks makes each overlapping tick skip harmlessly, and the run that actually
+      // executed stamps the day when it finishes.
+      if (result.skipped) return;
+      lastRunDate = dateStr;
       // Classify the SCHEDULED outcome for the operator-panel banner. A board archive is any
       // produced file that isn't the config snapshot. If one exists, the scheduled backup
       // succeeded — clear any prior failure. Otherwise record why it failed so panels can
@@ -411,7 +443,7 @@ export function startBackupScheduler() {
         if (/no snapshots/i.test(err)) reason = 'empty';
         else if (/no valid backup target/i.test(err)) reason = 'target';
         else if (/no valid files|returned JSON|export/i.test(err)) reason = 'export';
-        status.scheduledFailure = { at: Date.now(), reason, message: err };
+        status.scheduledFailure = { at: Date.now(), reason, message: err, cardLabel: result.lastTargetLabel || null };
         console.warn(`[backup] scheduled backup FAILED (${reason}): ${err}`);
       }
     }

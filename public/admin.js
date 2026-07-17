@@ -1514,7 +1514,8 @@ async function refreshSweep() {
     $('swInterval').value = config.shareSweep.intervalSec || 60;
     renderSweepCards();
     const when = s.lastRun ? new Date(s.lastRun).toLocaleTimeString() : 'never';
-    $('sweepState').textContent = `Last run ${when}` + (s.lastError ? ` · ${s.lastError}` : ` · shared ${s.shared || 0}, checked ${s.checked || 0}`);
+    $('sweepState').textContent = `Last run ${when}` + (s.lastError ? ` · ${s.lastError}`
+      : ` · shared ${s.shared || 0}, checked ${s.checked || 0}` + (s.failed ? `, FAILED ${s.failed}` : ''));
   } catch (e) { $('sweepState').textContent = 'Error: ' + e.message; }
 }
 
@@ -1553,7 +1554,7 @@ $('swRun').addEventListener('click', async () => {
   $('sweepState').textContent = 'Running…';
   try {
     const s = await fetch('/api/admin/sharesweep/run', { method: 'POST', headers: headers() }).then(r => r.json());
-    $('sweepState').textContent = `Shared ${s.shared || 0}, checked ${s.checked || 0}`;
+    $('sweepState').textContent = `Shared ${s.shared || 0}, checked ${s.checked || 0}` + (s.failed ? `, FAILED ${s.failed}` : '');
   } catch (e) { $('sweepState').textContent = 'Error: ' + e.message; }
 });
 

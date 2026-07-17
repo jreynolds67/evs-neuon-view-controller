@@ -389,7 +389,7 @@ networks:
 | `BOARD_PORT` | (scheme default) | Override the board API port. |
 | `BOARD_TLS_REJECT_UNAUTHORIZED` | `false` | Set `true` only if boards present a CA-trusted cert (rare on broadcast gear). |
 | `BOARD_EXPORT_TIMEOUT_MS` | `600000` (10 min) | Timeout for whole-board snapshot exports (backups). Separate from the 8s default used for ordinary API calls, since an export streams the card's full snapshot storage. |
-| `TRUST_PROXY` | (off) | Set `1` **only** if a trusted reverse proxy sits in front and sets `X-Forwarded-For`. Off by default so the header can't be forged to impersonate a panel on a flat network. |
+| `TRUST_PROXY` | (off) | Set `1` **only** if a trusted reverse proxy sits in front and sets `X-Forwarded-For`. Off by default so the header can't be forged to impersonate a panel on a flat network. The proxy must **overwrite** the header with the real client address, not append to one the client sent — the app trusts the first hop, and an appended header lets a client pick its own identity (panel impersonation, login-throttle bypass). |
 
 ## Local development
 

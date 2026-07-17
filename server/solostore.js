@@ -36,7 +36,19 @@ export async function loadSoloStore() {
   loaded = true;
 }
 
-async function persist() {
+// Serialise writes: two panels soloing/un-soloing different heads at the same moment run two
+// concurrent persist() calls against ONE shared temp path, and interleaved renames can move a
+// half-written file into place. Chaining them fixes that; each chained write snapshots the
+// then-current `store`, so the last write in the chain always lands with every mutation.
+let persistChain = Promise.resolve();
+
+function persist() {
+  const run = persistChain.then(doPersist);
+  persistChain = run.then(() => {}, () => {}); // a failed write must not poison later ones
+  return run;
+}
+
+async function doPersist() {
   const dir = dirname(SOLO_PATH);
   if (!existsSync(dir)) await mkdir(dir, { recursive: true });
   const tmp = `${SOLO_PATH}.tmp`;

@@ -85,7 +85,35 @@ export async function loadConfig() {
   return cache;
 }
 
-export async function saveConfig(next) {
+// Serialise saves. Two concurrent saveConfig calls would otherwise interleave on the SHARED
+// temp path (each can rename the other's half-written file into place) — and, worse, defeat
+// the version check: the check reads `cache`, but a save only assigns `cache = next` after
+// its awaited write finishes, so a second save that arrives during the first one's disk I/O
+// still sees the OLD version and passes. Chaining every save through one promise makes
+// check-and-write atomic (Node is single-threaded between awaits, so an in-process chain is
+// a complete mutex here — no cross-process access to the config file exists).
+let saveChain = Promise.resolve();
+
+export function saveConfig(next, expectedVersion = null) {
+  const run = saveChain.then(() => doSave(next, expectedVersion));
+  // The chain must survive a failed save (rejected link would poison every later save), but
+  // each caller still sees their own failure via `run`.
+  saveChain = run.then(() => {}, () => {});
+  return run;
+}
+
+async function doSave(next, expectedVersion) {
+  // Optimistic concurrency, verified INSIDE the lock so it can't race a save already in
+  // flight. `expectedVersion` is the token the admin page loaded with; null means "no check"
+  // (targeted server-side read-modify-writes that operate on the live cache object).
+  if (expectedVersion !== null) {
+    const current = Number(cache && cache.configVersion) || 0;
+    if (current !== expectedVersion) {
+      const e = new Error('Config was saved by another session since this page loaded.');
+      e.code = 'CONFIG_STALE';
+      throw e;
+    }
+  }
   await ensureDir();
   // Optimistic-concurrency token, owned here so EVERY write bumps it — including the targeted
   // backup/shareSweep writes, not just the main config PUT. The admin page holds one whole

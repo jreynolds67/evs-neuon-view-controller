@@ -532,11 +532,13 @@ let bkDismissedAt = null;
 
 function bkFailureText(failure) {
   const when = failure.at ? new Date(failure.at).toLocaleString() : 'recently';
+  // Name the card by label when the server provided one (it withholds IP-shaped labels).
+  const card = failure.cardLabel ? ` of ${failure.cardLabel}` : '';
   if (failure.reason === 'empty') {
-    return `Scheduled snapshot backup at ${when} found no snapshots to back up — tell an engineer to check the backup settings.`;
+    return `Scheduled snapshot backup${card} at ${when} found no snapshots to back up — tell an engineer to check the backup settings.`;
   }
   // export / target / generic error all read as a backup failure to the operator.
-  return `Scheduled snapshot backup failed at ${when} — tell an engineer to check the backup settings.`;
+  return `Scheduled snapshot backup${card} failed at ${when} — tell an engineer to check the backup settings.`;
 }
 
 function renderBkBanner(failure) {

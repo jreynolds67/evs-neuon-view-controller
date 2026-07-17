@@ -15,6 +15,13 @@ export function createTtlCache(defaultTtlMs, opts = {}) {
   const inflight = new Map();
   // key -> { err, at }            (recent failures, cached briefly — see negTtlMs)
   const negative = new Map();
+  // Keys invalidated WHILE a fetch was in flight. The fetch started before the write that
+  // triggered the invalidation, so its result is stale the moment it arrives — it may be
+  // returned to the callers already awaiting it (a snapshot from before the write, same as if
+  // they'd polled a moment earlier) but it must NOT be cached, or every other caller gets the
+  // pre-write value served from memory for a full TTL after an invalidate that promised
+  // otherwise. Only ever holds keys that are also in `inflight`, so it can't grow unbounded.
+  const doomed = new Set();
   // How long to remember a failure. A down/rebooting board otherwise gets a fresh fetch
   // attempt (each with the full board timeout) on every poll; caching the failure for a few
   // seconds lets it recover without being hammered. 0 disables negative caching.
@@ -30,31 +37,44 @@ export function createTtlCache(defaultTtlMs, opts = {}) {
       if (neg && (Date.now() - neg.at) < negTtlMs) throw neg.err;
     }
 
-    // A fetch for this key is already running — join it instead of starting another.
+    // A fetch for this key is already running — join it instead of starting another. Unless
+    // it's doomed: this caller arrived AFTER the invalidation, so handing it that fetch's
+    // result would serve data known to predate the write. Let the doomed fetch settle (the
+    // one-producer-per-key invariant) and then start fresh.
     const pending = inflight.get(key);
-    if (pending) return pending;
+    if (pending) {
+      if (!doomed.has(key)) return pending;
+      try { await pending; } catch { /* the doomed fetch's outcome isn't this caller's */ }
+      return get(key, producer, ttlMs);
+    }
 
     const p = (async () => {
       try {
         const value = await producer();
-        store.set(key, { value, at: Date.now() });
-        if (negTtlMs) negative.delete(key);
+        if (!doomed.has(key)) {
+          store.set(key, { value, at: Date.now() });
+          if (negTtlMs) negative.delete(key);
+        }
         return value;
       } catch (err) {
-        if (negTtlMs) negative.set(key, { err, at: Date.now() });
+        if (negTtlMs && !doomed.has(key)) negative.set(key, { err, at: Date.now() });
         throw err;
       } finally {
         inflight.delete(key);
+        doomed.delete(key);
       }
     })();
     inflight.set(key, p);
     return p;
   }
 
-  // Drop a key (e.g. after a write that we know changed the underlying data).
+  // Drop a key (e.g. after a write that we know changed the underlying data). A fetch already
+  // in flight for the key started BEFORE that write, so mark it doomed: it resolves to its
+  // waiting callers but is not cached.
   function invalidate(key) {
     store.delete(key);
     negative.delete(key);
+    if (inflight.has(key)) doomed.add(key);
   }
 
   // Periodic prune so the maps can't grow without bound from transient keys.

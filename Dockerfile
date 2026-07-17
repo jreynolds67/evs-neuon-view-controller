@@ -10,8 +10,12 @@ WORKDIR /app
 # to a real zone so the backup scheduler fires at LOCAL wall-clock time and file timestamps
 # read in local time — otherwise the container runs in UTC and "03:00" means 03:00 UTC.
 RUN apk add --no-cache tzdata
-COPY package.json package-lock.json* ./
-RUN npm install --omit=dev
+# npm ci (not install): installs EXACTLY what the lockfile pins, and fails the build if the
+# lockfile is missing or out of sync — a floating dependency resolved at build time is how two
+# "identical" deploys end up running different code. The non-wildcard COPY backs that up: a
+# build without the lockfile should fail loudly here, not silently produce an unpinned image.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 # App source
 COPY server ./server

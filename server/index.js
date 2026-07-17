@@ -260,7 +260,15 @@ app.get('/api/panel/backup-status', async (req, res) => {
   if (!panel) return res.status(404).json({ error: 'Panel not registered' });
   if ((panel.layout || '1080') !== '1080') return res.json({ failure: null });
   const st = backupStatus();
-  res.json({ failure: st.scheduledFailure || null });
+  const f = st.scheduledFailure;
+  if (!f) return res.json({ failure: null });
+  // Rebuild the failure with ONLY panel-safe fields. `message` is raw board-layer error text
+  // and stays admin-only: board IPs are deliberately never shown to panels (same rule as
+  // sendPanelErr), and it can echo arbitrary board response bodies. The card is named by its
+  // label instead — unless the backup target was configured as a raw IP, in which case the
+  // label IS that IP and is withheld for the same reason.
+  const cardLabel = (f.cardLabel && !/^\d+\.\d+\.\d+\.\d+$/.test(f.cardLabel)) ? f.cardLabel : null;
+  res.json({ failure: { at: f.at, reason: f.reason, cardLabel } });
 });
 
 // Snapshots offered for a given card+head, honouring the admin filter.
@@ -291,23 +299,28 @@ app.get('/api/panel/cards/:cardId/heads/:headUuid/snapshots', async (req, res) =
 
     // Enrich with metadata. If the list entry already carried it, use that and skip
     // the per-item fetch (which is what was 404ing when the UUID was an [object Object]).
-    const metas = await Promise.all(entries.map(async (e) => {
+    // Bounded via runPool: on 1.10 firmware the list is bare UUIDs, so every entry needs its
+    // own board fetch — unbounded, a large snapshot library meant hundreds of simultaneous
+    // requests to a storage layer the rest of this codebase deliberately paces.
+    const metas = new Array(entries.length);
+    await runPool(entries, async (e, idx) => {
       if (e.inlineMeta) {
-        return {
+        metas[idx] = {
           uuid: e.uuid,
           name: e.name || e.uuid,
           description: e.description || '',
           timestamp: e.timestamp || 0,
           path: e.path || '',
         };
+        return;
       }
       try {
         const m = await getSnapshotMeta(card.ip, e.uuid);
-        return { uuid: e.uuid, name: m.name || e.uuid, description: m.description || '', timestamp: m.timestamp || 0, path: m.path || '' };
+        metas[idx] = { uuid: e.uuid, name: m.name || e.uuid, description: m.description || '', timestamp: m.timestamp || 0, path: m.path || '' };
       } catch {
-        return { uuid: e.uuid, name: e.uuid, description: '', timestamp: 0, path: '' };
+        metas[idx] = { uuid: e.uuid, name: e.uuid, description: '', timestamp: 0, path: '' };
       }
-    }));
+    });
     // Sort by folder, then name, for a predictable grouped list.
     metas.sort((a, b) =>
       (a.path || '').localeCompare(b.path || '') || (a.name || '').localeCompare(b.name || ''));
@@ -623,11 +636,13 @@ app.post('/api/panel/cards/:cardId/snapshots/:snapUuid/restore', async (req, res
 // (solostore) so any panel can restore it and a redeploy can't strand an on-air head. The client
 // disables source-repointing while soloed, so nothing else changes the survivor meanwhile.
 
-// Run async tasks over `items` with bounded concurrency. An individual failure does NOT abort the
-// run — a solo/unsolo shouldn't stop dead because one widget hiccuped — but failures ARE counted
-// and returned, so the caller can tell the operator rather than report success over a head that
-// is visibly wrong. Far faster than sequential awaits when a head has many windows, and order is
-// irrelevant here (these heads have no overlap/z-order), so running in parallel is safe.
+// Run async tasks over `items` with bounded concurrency. Shared by the solo/unsolo widget
+// operations AND the snapshot-metadata listings (which pre-declare a results array and have the
+// worker fill `results[idx]`, since only the failure COUNT is returned here). An individual
+// failure does NOT abort the run — a solo/unsolo shouldn't stop dead because one widget hiccuped
+// — but failures ARE counted and returned, so the caller can tell the operator rather than
+// report success over a head that is visibly wrong. Far faster than sequential awaits, and
+// bounded so a big item list can't stampede a board's fragile storage layer all at once.
 // Returns the number of items whose worker threw.
 async function runPool(items, worker, concurrency = 16) {
   let i = 0;
@@ -676,7 +691,21 @@ app.post('/api/panel/cards/:cardId/heads/:headUuid/solo', async (req, res) => {
     // Un-solo reconciles against the live head, so holding again still restores cleanly from here.
     const others = widgets.filter((w) => w.uuid !== targetWidgetUuid);
     const failed = await runPool(others, (w) => deleteHeadWidget(card.ip, headUuid, w.uuid));
-    await setWidgetFullscreenVideoOnly(card.ip, headUuid, targetWidgetUuid);
+    try {
+      await setWidgetFullscreenVideoOnly(card.ip, headUuid, targetWidgetUuid);
+    } catch (e) {
+      // The deletes already ran, so the head is showing a partial mosaic — falling through to
+      // the generic board error here would tell the operator nothing about how to get it back.
+      // The capture was persisted before any delete, so hold-to-restore works: say so, exactly
+      // like the failed-deletes case below.
+      previewCache.invalidate(`${card.ip}::${headUuid}`);
+      return res.status(502).json({
+        error: 'Fullscreen incomplete — the other windows were removed but the card rejected the '
+          + 'fullscreen change, so the head is showing a partial layout. Press and hold again to '
+          + 'restore the layout, then try again.',
+        code: 'SOLO_PARTIAL',
+      });
+    }
     previewCache.invalidate(`${card.ip}::${headUuid}`);
     if (failed) {
       return res.status(502).json({
@@ -829,19 +858,19 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
   // Optimistic concurrency. This PUT is a whole-config REPLACE, so two admin windows open at
   // once were last-write-wins: the second Save silently reverted everything the first changed,
   // and neither side ever saw a sign of it. Refuse a save built on a stale read instead.
-  // Checked before any normalisation so a doomed save does no work. Legacy configs carry no
-  // token (undefined -> 0 both sides), so the first save after an upgrade is accepted.
+  // Checked before any normalisation so a doomed save does no work — but this early check is
+  // only the fast-fail: the AUTHORITATIVE check runs inside saveConfig's write lock (see
+  // stale409 below), where it can't race another save's in-flight disk write.
   const existing = await loadConfig();
   const currentVersion = Number(existing.configVersion) || 0;
   const clientVersion = Number(next.configVersion) || 0;
-  if (currentVersion !== clientVersion) {
-    return res.status(409).json({
-      code: 'CONFIG_STALE',
-      error: 'Another admin session saved changes since this page loaded, so saving now would '
-        + 'silently revert them. Use “Export backup” if you want to keep your edits, then '
-        + 'reload the page and reapply them.',
-    });
-  }
+  const stale409 = () => res.status(409).json({
+    code: 'CONFIG_STALE',
+    error: 'Another admin session saved changes since this page loaded, so saving now would '
+      + 'silently revert them. Use “Export backup” if you want to keep your edits, then '
+      + 'reload the page and reapply them.',
+  });
+  if (currentVersion !== clientVersion) return stale409();
 
   next.settings = { showUuids: true, ...(next.settings || {}) };
   if (!next.headFilters || typeof next.headFilters !== 'object') next.headFilters = {};
@@ -902,7 +931,12 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
     delete next.shareSweep;
   }
 
-  await saveConfig(next);
+  try {
+    await saveConfig(next, clientVersion);
+  } catch (e) {
+    if (e && e.code === 'CONFIG_STALE') return stale409();
+    return res.status(500).json({ error: `Saving the config failed: ${e.message}` });
+  }
   // Unassigning a head (or removing its card) makes any solo capture it holds unrestorable —
   // un-solo is only reachable from a panel the head is assigned to. Drop those now rather than
   // leaving them on the volume forever.
@@ -943,13 +977,15 @@ app.get('/api/admin/cards/:cardId/snapshots', requireAdmin, async (req, res) => 
     const entries = (info.snapshots || [])
       .map(normalizeSnapshotEntry)
       .filter((e) => e.uuid && e.deleted !== true); // hide board-deleted (tombstoned) snapshots
-    const metas = await Promise.all(entries.map(async (e) => {
-      if (e.inlineMeta) return { uuid: e.uuid, name: e.name || e.uuid, path: e.path || '' };
+    // Bounded like the panel listing above: on 1.10 every entry is a separate board fetch.
+    const metas = new Array(entries.length);
+    await runPool(entries, async (e, idx) => {
+      if (e.inlineMeta) { metas[idx] = { uuid: e.uuid, name: e.name || e.uuid, path: e.path || '' }; return; }
       try {
         const m = await getSnapshotMeta(card.ip, e.uuid);
-        return { uuid: e.uuid, name: m.name || e.uuid, path: m.path || e.path || '' };
-      } catch { return { uuid: e.uuid, name: e.uuid, path: e.path || '' }; }
-    }));
+        metas[idx] = { uuid: e.uuid, name: m.name || e.uuid, path: m.path || e.path || '' };
+      } catch { metas[idx] = { uuid: e.uuid, name: e.uuid, path: e.path || '' }; }
+    });
     res.json(metas);
   } catch (e) { sendErr(res, e); }
 });
