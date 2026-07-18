@@ -138,7 +138,26 @@ export function saveConfig(next, expectedVersion = null) {
 // leaving the in-memory cache diverged from disk.
 export function updateConfig(mutate) {
   return enqueueSave(async () => {
-    const next = structuredClone(cache || defaultConfig());
+    // Load before cloning. `cache` being populated is currently guaranteed by every caller
+    // having gone through an authenticated route (which reads the config to check the
+    // credential), but that invariant lives in other modules — relying on it silently means a
+    // future caller that reaches here first would clone the EMPTY default and write it over a
+    // real config file. Load explicitly so the guarantee is structural, not circumstantial.
+    await loadConfig();
+    // A load that FAILED (malformed JSON, unreadable file) also leaves an empty config behind —
+    // loadConfig never throws by design. Writing a targeted update on top of that would turn a
+    // fully recoverable bad-JSON file into a genuinely empty one, destroying every card, panel,
+    // and filter. Same rule the boot-time solo prune follows: never destroy on the basis of a
+    // config we couldn't read.
+    if (!configAuthoritative) {
+      const e = new Error('The stored configuration could not be read, so this partial update '
+        + 'was refused — saving it would overwrite the existing config with an empty one. Fix '
+        + `${CONFIG_PATH} and restart.`);
+      e.code = 'CONFIG_UNAVAILABLE';
+      e.status = 503;
+      throw e;
+    }
+    const next = structuredClone(cache);
     await mutate(next);
     return doSave(next, null);
   });

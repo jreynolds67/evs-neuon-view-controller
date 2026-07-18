@@ -274,10 +274,12 @@ metadata from the board — and normalizes it:
 
 Admin access requires a username/password stored in `config.json` under
 `admin: { user, passwordHash }`. The password is a **salted scrypt hash**, never plaintext.
-A signed-in session is a cookie that ends when the browser session closes or after **30
-minutes** of inactivity — there is no persistent "remember me". Loading the admin page
-without a valid session redirects to the login screen. (The panel-facing API is always
-scoped by source IP regardless of admin login.)
+A signed-in session is a cookie that ends when the browser session closes, when you sign out,
+or when the container restarts — sessions are held in memory only, so there is no persistent
+"remember me". There is no idle timeout: the admin page polls its activity log continuously
+while open, so an idle window would only ever have expired tabs that were already closed.
+Loading the admin page without a valid session redirects to the login screen. (The panel-facing
+API is always scoped by source IP regardless of admin login.)
 
 Generate a hash on any machine that has the repo:
 

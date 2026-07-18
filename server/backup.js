@@ -446,6 +446,60 @@ async function loadScheduledFailure() {
 // Scheduler: checks every minute whether the configured HH:MM has arrived today and the
 // backup hasn't run yet today.
 let lastRunDate = null;
+
+// The schedule this scheduler has already evaluated, as minutes-of-day (null = no active
+// schedule; `undefined` = never evaluated yet). Tracking it is what tells an UNCHANGED
+// schedule apart from one that was just enabled or edited — see adoptSchedule().
+let knownSchedule;
+
+// The date (YYYY-MM-DD) whose run was SUPPRESSED because the schedule was already past when we
+// first saw it. Deliberately separate from lastRunDate: that one means "a backup actually ran
+// on this date", and conflating the two is wrong in both directions. Suppression must be
+// liftable — moving the time to a still-future hour today is an explicit request to run tonight
+// — whereas a real run must NOT be, or a same-day time change would back the board up twice.
+let suppressedDate = null;
+
+// The effective target minute for a backup config, or null when no backup is scheduled at
+// all (disabled, no card, no/invalid time). One definition, used by both the tick and the
+// startup evaluation, so the two can't disagree about what "scheduled" means.
+function scheduleTarget(bcfg) {
+  if (!bcfg || !bcfg.enabled || !bcfg.cardId || !bcfg.timeHHMM) return null;
+  return hhmmToMinutes(bcfg.timeHHMM);
+}
+
+// Record the currently-configured schedule and, when it is NEW to us, suppress today's run if
+// its time has already passed.
+//
+// "New to us" covers two cases that must behave identically:
+//   * startup — a redeploy after the scheduled time must not immediately fire a heavy board
+//     export (deployments here are frequent).
+//   * a schedule that just CHANGED — enabling backups at 17:00 with a 03:00 target, or editing
+//     the time from a future one to an earlier one, would otherwise make the very next minute
+//     tick fire on the spot, because 17:00 is "past due" for 03:00 and nothing had run today.
+//     That is the same surprise export the startup guard exists to prevent, reached by a
+//     different door, so it gets the same answer: the new schedule takes effect TOMORROW.
+//
+// The missed-minute protection is unaffected: once a schedule is known, a delayed tick still
+// fires today's run for a minute that passed while the loop was busy.
+function adoptSchedule(target) {
+  if (target === knownSchedule) return;
+  const first = knownSchedule === undefined;
+  knownSchedule = target;
+  if (target == null) return;
+  const now = new Date();
+  if ((now.getHours() * 60 + now.getMinutes()) >= target) {
+    suppressedDate = todayStamp();
+    console.log(`[backup] ${first ? 'configured' : 'new'} schedule (${p2m(target)}) has already `
+      + 'passed today — first run will be tomorrow');
+  } else {
+    // The new schedule is still ahead of us today, so there is nothing to suppress — and an
+    // earlier suppression must be LIFTED, or moving the time from an already-past hour to a
+    // later one today would silently skip the run the admin just asked for. (A real run today
+    // still blocks it, via lastRunDate.)
+    suppressedDate = null;
+  }
+}
+
 export function startBackupScheduler() {
   sweepTmp(); // clear any temp files left by a backup interrupted mid-write
   loadScheduledFailure(); // restore any failure banner from before a restart
@@ -454,17 +508,21 @@ export function startBackupScheduler() {
     status.nextCheck = Date.now();
     const config = await loadConfig();
     const bcfg = config.backup || {};
-    if (!bcfg.enabled || !bcfg.cardId || !bcfg.timeHHMM) return;
-    const target = hhmmToMinutes(bcfg.timeHHMM);
+    const target = scheduleTarget(bcfg);
+    // Evaluate BEFORE the fire check: a schedule that only just appeared or moved must be
+    // adopted (and suppressed if already past) rather than treated as overdue.
+    adoptSchedule(target);
     if (target == null) return;
     const now = new Date();
     const nowMin = now.getHours() * 60 + now.getMinutes();
     const dateStr = todayStamp();
     // Fire when we're at OR PAST the scheduled minute and haven't run yet today. Using
     // "past due" instead of exact equality means a delayed tick (busy event loop, a long
-    // prior backup) still triggers today's run instead of silently skipping 24 hours. The
-    // per-day guard (lastRunDate) ensures it only runs once.
-    if (nowMin >= target && lastRunDate !== dateStr) {
+    // prior backup) still triggers today's run instead of silently skipping 24 hours. Two
+    // separate guards keep that from over-firing: lastRunDate (a backup already ran today) and
+    // suppressedDate (this schedule was already past when we first saw it, so it starts
+    // tomorrow) — see adoptSchedule.
+    if (nowMin >= target && lastRunDate !== dateStr && suppressedDate !== dateStr) {
       console.log(`[backup] scheduled trigger (target ${bcfg.timeHHMM}, now ${p2(now)})`);
       const result = await runBackupNow();
       // A skipped run (another backup — likely a manual one — held the guard) is NOT today's
@@ -504,19 +562,15 @@ export function startBackupScheduler() {
   timer = setInterval(tick, 60000);
   timer.unref?.();
 
-  // On startup, if we're already past today's target time, mark today as done so a redeploy
-  // after the scheduled time doesn't immediately fire an unexpected backup. The missed-minute
-  // protection still applies going forward (a delayed tick within the same day still fires if
-  // the minute was crossed while running). Deployments happen often here, so avoiding a
-  // surprise heavy board export on every restart is the safer default.
+  // Evaluate the configured schedule IMMEDIATELY, not on the first tick a minute from now:
+  // booting at 02:59 with a 03:00 target must still fire at 03:00, and a first-tick-only
+  // evaluation would see 03:00 as a brand-new schedule that had just passed and suppress it.
   (async () => {
     try {
       const cfg = await loadConfig();
-      const target = hhmmToMinutes((cfg.backup || {}).timeHHMM);
-      const now = new Date();
-      if (target != null && (now.getHours() * 60 + now.getMinutes()) >= target) {
-        lastRunDate = todayStamp();
-      }
+      // A tick could theoretically have beaten us here; adoptSchedule is idempotent for an
+      // unchanged schedule, so this is safe either way.
+      adoptSchedule(scheduleTarget(cfg.backup || {}));
     } catch {}
   })();
 
@@ -526,6 +580,11 @@ export function startBackupScheduler() {
 function p2(d) {
   const p = (n) => String(n).padStart(2, '0');
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+// Same HH:MM rendering for a minutes-of-day number (used in schedule log lines).
+function p2m(minutes) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(Math.floor(minutes / 60))}:${p(minutes % 60)}`;
 }
 
 export function backupStatus() {

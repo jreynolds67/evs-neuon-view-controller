@@ -30,7 +30,10 @@ function renderCards() {
         cardHeadsCache.delete(config.cards[+i].id);
         cardSnapsCache.delete(config.cards[+i].id);
       }
-      if (f === 'label') renderPanels(); // panels show card labels in the head source line
+      // Card labels are shown in the panel head source line, the backup target dropdown, and
+      // the sweep chips — refresh those in place (NOT renderCards, which would rebuild this
+      // very input and steal focus mid-keystroke).
+      if (f === 'label') { renderPanels(); renderBackupCards(); }
       // NOTE: id changes are handled on 'change' (below), not here — cascading references on
       // every keystroke would chase a half-typed id.
     });
@@ -45,7 +48,10 @@ function renderCards() {
       cardHeadsCache.delete(originalId); cardSnapsCache.delete(originalId);
       cardHeadsCache.delete(newId); cardSnapsCache.delete(newId);
       originalId = newId;
-      renderPanels(); renderHeadFilterCards();
+      // renderBackupCards picks up the rename that renameCardIdReferences just applied to
+      // config.backup.cardId and config.shareSweep.targets — without it the dropdown and chips
+      // keep showing the OLD id and read as a broken target.
+      renderPanels(); renderHeadFilterCards(); renderBackupCards();
     });
   });
   tb.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', (e) => {
@@ -54,6 +60,7 @@ function renderCards() {
   renderReachRow();
   renderSyncDiagCards();
   renderHeadFilterCards();
+  renderBackupCards(); // backup target dropdown + sweep chips also key off the card list
   loadAllStorage();
 }
 

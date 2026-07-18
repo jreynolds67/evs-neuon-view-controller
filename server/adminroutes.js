@@ -30,8 +30,8 @@ import { clientIp } from './util.js';
 const router = express.Router();
 export default router;
 
-// Admin API gate: a valid, non-idle session cookie is required. Touching the session here
-// also slides the 30-minute idle window forward on every admin request.
+// Admin API gate: a valid session cookie is required. Sessions last until sign-out, the browser
+// session ending, or a container restart — there is no idle expiry (see server/auth.js).
 function requireAdmin(req, res, next) {
   if (touchSession(sessionIdFromReq(req))) return next();
   return res.status(401).json({ error: 'Not authenticated' });
@@ -215,8 +215,9 @@ router.put('/config', requireAdmin, async (req, res) => {
     delete next.shareSweep;
   }
 
+  let saved;
   try {
-    await saveConfig(next, clientVersion);
+    saved = await saveConfig(next, clientVersion);
   } catch (e) {
     if (e && e.code === 'CONFIG_STALE') return stale409();
     return res.status(500).json({ error: `Saving the config failed: ${e.message}` });
@@ -238,9 +239,15 @@ router.put('/config', requireAdmin, async (req, res) => {
   // and its next Save just fails the version check with no idea why. Excludes the window that
   // saved: it already has the new config, and telling it would report its own save as someone
   // else's.
-  broadcastControl({ type: 'config-changed', configVersion: next.configVersion }, clientIdOf(req));
-  // Hand back the new token so THIS window's next save isn't refused as stale.
-  res.json({ ok: true, configVersion: next.configVersion });
+  broadcastControl({ type: 'config-changed', configVersion: saved.configVersion }, clientIdOf(req));
+  // Hand back the new token so THIS window's next save isn't refused as stale — AND the config
+  // as actually stored. This PUT normalises what it was sent (retention clamped to 1–365, sweep
+  // interval to 10–3600, a blank backup time defaulted, head filters for deleted cards dropped),
+  // so the client's copy is not what's on disk. Without returning it, the page went on showing
+  // the un-normalised values under a "Saved" label, and the difference only surfaced on the next
+  // reload as an unexplained change. `admin` is stripped, exactly as on GET /config.
+  const { admin: _admin, ...safeSaved } = saved;
+  res.json({ ok: true, configVersion: saved.configVersion, config: safeSaved });
 });
 
 // --- board probes ----------------------------------------------------------
@@ -432,9 +439,20 @@ router.put('/backup', requireAdmin, async (req, res) => {
   // handler (loadConfig → mutate → saveConfig) would race a concurrent full-config PUT: if that
   // PUT's write landed first, this save — built from the pre-PUT snapshot — would silently
   // revert it. updateConfig re-reads the freshest config inside the lock.
-  const saved = await updateConfig((cfg) => {
-    cfg.backup = normalizeBackupConfig(body, cfg.backup || {});
-  });
+  //
+  // Wrapped: updateConfig can reject (a disk write failure, or a refusal to patch a config that
+  // didn't load). Express 4 does not catch async handler rejections, so an unwrapped one becomes
+  // an unhandled rejection — which on Node 20 kills the whole process over a single failed save.
+  let saved;
+  try {
+    saved = await updateConfig((cfg) => {
+      cfg.backup = normalizeBackupConfig(body, cfg.backup || {});
+    });
+  } catch (e) {
+    return res.status(e.status || 500).json({
+      error: e.message || 'Saving the backup settings failed.', code: e.code || null,
+    });
+  }
   // Other admin pages need to know the token moved. Note: 'config-changed' ONLY — no 'reload'.
   // This endpoint exists precisely so "Back up now" doesn't bounce every operator panel
   // mid-show; broadcasting a reload here would reintroduce exactly that on-air side effect.

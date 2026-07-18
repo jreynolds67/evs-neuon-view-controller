@@ -22,8 +22,42 @@ async function refreshSweep() {
   } catch (e) { $('sweepState').textContent = 'Error: ' + e.message; }
 }
 
+// Rebuild the card-dependent controls on this tab: the backup Board dropdown and the sweep
+// chips. Called from renderCards() so adding, renaming, or deleting a card on the Setup tab is
+// reflected here immediately. Previously these were built only by refreshBackup()/refreshSweep()
+// on page load, so a card added in this session couldn't be chosen as a backup target (and a
+// deleted one lingered) until a full page reload.
+function renderBackupCards() {
+  renderBackupCardOptions();
+  renderSweepCards();
+}
+
+// The backup target dropdown, built from the current cards with the stored target preselected.
+function renderBackupCardOptions() {
+  const sel = $('bkCard');
+  if (!sel) return;
+  const c = (config.backup ||= { enabled: false, cardId: '', timeHHMM: '03:00', retentionCount: 30 });
+  const cards = config.cards.filter((x) => x.id);
+  let opts = '<option value="">— select —</option>' +
+    cards.map((x) => `<option value="${esc(x.id)}"${x.id === c.cardId ? ' selected' : ''}>${esc(x.label || x.id)}</option>`).join('');
+  // A target whose card was deleted is shown EXPLICITLY rather than silently falling back to
+  // "— select —". The stored id is deliberately left alone: the scheduler reports it as "No
+  // valid backup target" (which raises the operator banner), whereas clearing it here would make
+  // the scheduler skip silently — a backup that quietly stops running is the worse failure.
+  // Surfacing the broken target is what actually gets it fixed.
+  if (c.cardId && !cards.some((x) => x.id === c.cardId)) {
+    opts += `<option value="${esc(c.cardId)}" selected>${esc(c.cardId)} — card removed</option>`;
+  }
+  sel.innerHTML = opts;
+}
+
 // Per-card enable chips. Empty targets means "all cards" — represented here by every
 // chip being on; toggling any off makes the set explicit.
+//
+// Note: a deleted card's id is deliberately NOT pruned from sw.targets. Pruning the last
+// remaining target would empty the list, and an empty list means "all cards" — silently
+// widening the sweep to boards the admin never selected, which writes snapshot metadata to
+// them. A leftover id is instead unresolvable and simply counts as unreachable in the status.
 function renderSweepCards() {
   const host = $('swCards'); host.innerHTML = '';
   const sw = (config.shareSweep ||= { enabled: false, intervalSec: 60, targets: [] });
@@ -104,9 +138,7 @@ async function refreshBackup() {
     $('bkEnabled').checked = !!c.enabled;
     $('bkTime').value = c.timeHHMM || '03:00';
     $('bkRetention').value = c.retentionCount || 30;
-    // Populate board dropdown from current cards.
-    $('bkCard').innerHTML = '<option value="">— select —</option>' +
-      config.cards.filter(x => x.id).map(x => `<option value="${esc(x.id)}"${x.id === c.cardId ? ' selected' : ''}>${esc(x.label || x.id)}</option>`).join('');
+    renderBackupCardOptions();
     const st = data.status || {};
     renderBackupFiles(data.files || [], st);
     // Page opened while a backup is running (the nightly one, or another admin's) — keep the

@@ -24,9 +24,9 @@ function headers() {
   return { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID };
 }
 
-// Every admin API call goes through this: a 401 means the session expired (30-min idle) or
-// was cleared — bounce to the login page. A named wrapper rather than patching window.fetch,
-// so only our own admin calls get the redirect behavior.
+// Every admin API call goes through this: a 401 means the session is gone (server restarted, or
+// signed out elsewhere) — bounce to the login page. A named wrapper rather than patching
+// window.fetch, so only our own admin calls get the redirect behavior.
 async function adminFetch(url, opts) {
   const res = await fetch(url, opts);
   if (res.status === 401) window.location.href = '/login.html';
@@ -54,33 +54,46 @@ function toast(msg, kind = '') {
   clearTimeout(toast._t); toast._t = setTimeout(() => t.className = 'toast', 3000);
 }
 
+// Fill in any keys a config might not carry (an older export, or a server response that omits
+// an unset block), so the editor never reads undefined and never writes it back on Save.
+// backup and shareSweep are edited inline on the Backups tab and saved WITH the main config,
+// so they live in the held config too.
+function applyConfigDefaults(c) {
+  c.cards ||= []; c.panels ||= [];
+  c.headFilters ||= {};
+  c.panelGroups ||= [];
+  c.settings ||= { showUuids: true };
+  c.shareSweep ||= { enabled: false, intervalSec: 60, targets: [] };
+  c.backup ||= { enabled: false, cardId: '', timeHHMM: '03:00', retentionCount: 30 };
+  return c;
+}
+
+// Redraw every section from the held config. Shared by load, import, and save-response adoption
+// so the three can't drift — each of those replaces `config` wholesale, and any section not
+// redrawn would keep showing the PREVIOUS config's values while a later Save wrote the new ones.
+function renderAllFromConfig() {
+  $('showUuids').checked = config.settings.showUuids !== false;
+  renderCards(); renderPanels(); renderHeadFilterCards();
+  // If a card's head filters are open, re-render their checkboxes against the config we just
+  // adopted — otherwise they'd still show the PREVIOUS config's ticks, which a later Save would
+  // then write back. Harmless on a manual Reload; actively wrong after a silent refresh.
+  if ($('hfCard') && $('hfCard').value) renderGlobalHeadFilters($('hfCard').value);
+  refreshBackup();
+  refreshSweep();
+}
+
 async function loadConfig() {
   setLoadState('Loading…');
   try {
     const res = await adminFetch('/api/admin/config', { headers: headers() });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
-    config = await res.json();
-    config.cards ||= []; config.panels ||= [];
-    config.headFilters ||= {};
-    config.panelGroups ||= [];
-    config.settings ||= { showUuids: true };
-    config.shareSweep ||= { enabled: false, intervalSec: 60, targets: [] };
-    config.backup ||= { enabled: false, cardId: '', timeHHMM: '03:00', retentionCount: 30 };
-    // backup and shareSweep are edited inline on the Backups tab and saved WITH the main
-    // config, so we keep them in the held config.
-    $('showUuids').checked = config.settings.showUuids !== false;
-    renderCards(); renderPanels(); renderHeadFilterCards();
-    // If a card's head filters are open, re-render their checkboxes against the config we just
-    // loaded — otherwise they'd still show the PREVIOUS config's ticks, which a later Save would
-    // then write back. Harmless on a manual Reload; actively wrong after a silent refresh.
-    if ($('hfCard') && $('hfCard').value) renderGlobalHeadFilters($('hfCard').value);
+    config = applyConfigDefaults(await res.json());
+    renderAllFromConfig();
     // Baseline for dirty-tracking, taken AFTER the render pass: rendering normalises config in
     // place (pads layout grids, renumbers head order), so snapshotting before it would make a
     // freshly-loaded page look edited.
     markClean();
     setLoadState('Loaded');
-    refreshBackup();
-    refreshSweep();
   } catch (e) { setLoadState('Error: ' + e.message); }
 }
 
@@ -100,10 +113,20 @@ async function saveConfig() {
       return;
     }
     if (!res.ok) throw new Error(body.error || res.status);
-    // Adopt the new token, or this window's NEXT save would be refused as stale.
+    // Adopt the CONFIG AS STORED, not the copy we sent. The server normalises on save (retention
+    // clamped, sweep interval clamped, a blank backup time defaulted, head filters for deleted
+    // cards dropped), so keeping our own copy would leave the page showing values that aren't on
+    // disk — under a "Saved" label, with the difference only appearing on some later reload.
+    if (body.config && typeof body.config === 'object') {
+      config = applyConfigDefaults(body.config);
+      renderAllFromConfig();
+    }
+    // Adopt the new token, or this window's NEXT save would be refused as stale. (Set after the
+    // config swap: the returned config carries it, but be explicit rather than depending on that.)
     if (typeof body.configVersion === 'number') config.configVersion = body.configVersion;
     // What's on screen is now what's stored — this is the new dirty baseline, and any stale
-    // notice is resolved by our own save.
+    // notice is resolved by our own save. Taken AFTER the render pass, for the same reason
+    // loadConfig does: rendering normalises config in place.
     markClean();
     hideCfgBanner();
     $('saveState').textContent = 'Saved ' + new Date().toLocaleTimeString();
@@ -151,24 +174,11 @@ $('importFile').addEventListener('change', async (e) => {
     // place in the save sequence. Adopting the exported file's stale token would make the next
     // Save fail as a phantom conflict (or, if it happened to match, defeat the check).
     const currentVersion = config.configVersion;
-    config = parsed;
+    // applyConfigDefaults fills anything an older export predates, so those keys don't sit
+    // undefined in the editor and get written back as such on the next Save.
+    config = applyConfigDefaults(parsed);
     config.configVersion = currentVersion;
-    config.cards ||= []; config.panels ||= [];
-    config.headFilters ||= {};
-    config.panelGroups ||= [];
-    config.settings ||= { showUuids: true };
-    // Apply the same defaults loadConfig() does, so an older export missing these keys doesn't
-    // leave them undefined in the editor (and get written as such on the next Save).
-    config.shareSweep ||= { enabled: false, intervalSec: 60, targets: [] };
-    config.backup ||= { enabled: false, cardId: '', timeHHMM: '03:00', retentionCount: 30 };
-    $('showUuids').checked = config.settings.showUuids !== false;
-    renderCards(); renderPanels(); renderHeadFilterCards();
-    // Re-render an open head-filter card, and refresh the Backups tab controls, against the
-    // imported config — otherwise those sections keep showing the PREVIOUS config's values
-    // while a Save would persist the imported ones.
-    if ($('hfCard') && $('hfCard').value) renderGlobalHeadFilters($('hfCard').value);
-    refreshBackup();
-    refreshSweep();
+    renderAllFromConfig();
     $('saveState').textContent = 'Imported — review and Save config to apply';
     toast('Backup loaded into editor. Review, then Save config.', 'ok');
   } catch (err) {

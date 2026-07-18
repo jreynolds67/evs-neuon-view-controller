@@ -1,7 +1,13 @@
 // server/auth.js
 // Admin authentication: a single username/password stored (hashed) in config, exchanged
-// for a short-lived, in-memory session cookie. Sessions are idle-expiring and are NOT
-// persisted — a container restart logs everyone out, which is fine for an admin surface.
+// for an in-memory session cookie. Sessions are NOT persisted — a container restart logs
+// everyone out, which is fine for an admin surface.
+//
+// A session lasts until the browser session ends (the cookie has no Max-Age), the admin signs
+// out, or the container restarts. There is deliberately NO idle timeout: the admin page polls
+// the activity log every 2s while open, which slid any idle window forward indefinitely, so the
+// timeout only ever logged out tabs that were already closed — it cost a re-login on a slow
+// afternoon and bought nothing. Removed rather than left as security theatre.
 //
 // Password storage: scrypt with a per-credential random salt, encoded as
 //   scrypt$<saltHex>$<hashHex>
@@ -20,9 +26,9 @@ import { promisify } from 'node:util';
 const scryptAsync = promisify(scryptCb);
 
 const SESSION_COOKIE = 'nmv_admin';
-const IDLE_MS = 30 * 60 * 1000; // 30 minutes of inactivity ends the session
 
-// sessionId -> { user, lastSeen }
+// sessionId -> { user, lastSeen }. Bounded in practice by the number of successful logins
+// since the last restart (one small record each), so it needs no sweep now that nothing expires.
 const sessions = new Map();
 
 // --- password hashing ------------------------------------------------------
@@ -56,12 +62,13 @@ export function createSession(user) {
   return id;
 }
 
-// Returns the session record if valid and not idle-expired, refreshing lastSeen; else null.
+// Returns the session record if the id names a live session, else null. `lastSeen` is kept
+// current for diagnostics; nothing expires on it (see the header note on the removed idle
+// timeout). The name stays `touchSession` because callers use it as "validate and mark active".
 export function touchSession(id) {
   if (!id) return null;
   const s = sessions.get(id);
   if (!s) return null;
-  if (Date.now() - s.lastSeen > IDLE_MS) { sessions.delete(id); return null; }
   s.lastSeen = Date.now();
   return s;
 }
@@ -69,12 +76,6 @@ export function touchSession(id) {
 export function destroySession(id) {
   if (id) sessions.delete(id);
 }
-
-// Periodic sweep of idle sessions so the map can't grow unbounded.
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, s] of sessions) if (now - s.lastSeen > IDLE_MS) sessions.delete(id);
-}, 5 * 60 * 1000).unref?.();
 
 // --- cookie helpers --------------------------------------------------------
 
